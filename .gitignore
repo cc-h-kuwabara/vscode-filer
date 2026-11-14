@@ -1,0 +1,5 @@
+mfiler4-master/
+node_modules/
+dist/
+*.vsix
+.vscode-test/

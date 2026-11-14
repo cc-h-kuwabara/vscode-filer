@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+webview/**
+test/**
+mfiler4-master/**
+node_modules/**
+tsconfig.json
+esbuild.js
+.gitignore
+*.vsix
+*.map
+

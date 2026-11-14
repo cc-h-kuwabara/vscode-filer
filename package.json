@@ -1,0 +1,109 @@
+{
+  "name": "vscode-filer",
+  "displayName": "VS Code Filer",
+  "description": "A 3-pane keyboard-driven filer for VS Code inspired by mfiler4 (2 directory panes + operation log pane).",
+  "version": "0.1.0",
+  "publisher": "kuwabara",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscode-filer.open",
+        "title": "VS Code Filer: Open"
+      }
+    ],
+    "configuration": {
+      "title": "VS Code Filer",
+      "properties": {
+        "vscodeFiler.showDotFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show hidden files starting with a dot (.)."
+        },
+        "vscodeFiler.confirmPermanentDelete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before permanently deleting files (D)."
+        },
+        "vscodeFiler.keybindings": {
+          "type": "object",
+          "default": {
+            "cursorUp": ["ArrowUp", "ctrl+p"],
+            "cursorDown": ["ArrowDown", "ctrl+n"],
+            "paneLeft": ["ArrowLeft", "ctrl+b"],
+            "paneRight": ["ArrowRight", "ctrl+f"],
+            "switchPane": ["Tab"],
+            "cursorTop": ["ctrl+a"],
+            "cursorBottom": ["ctrl+e"],
+            "pageUp": ["PageUp", "ctrl+u", "alt+v"],
+            "pageDown": ["PageDown", "ctrl+d", "ctrl+v"],
+            "enter": ["Enter"],
+            "parentDir": ["Backspace", "ctrl+h", "Delete"],
+            "rootDir": ["\\"],
+            "homeDir": ["~"],
+            "toggleMark": [" "],
+            "rangeMarkStart": ["["],
+            "rangeMarkEnd": ["]"],
+            "invertFileMarks": ["Home", "alt+a"],
+            "invertAllMarks": ["End", "alt+e"],
+            "globMark": ["*"],
+            "regexMark": ["+"],
+            "toggleDotFiles": ["."],
+            "copy": ["c"],
+            "move": ["m"],
+            "trash": ["d"],
+            "deletePermanent": ["D"],
+            "symlink": ["l"],
+            "rename": ["r"],
+            "newFile": ["n"],
+            "newDir": ["k"],
+            "compressToOther": ["p"],
+            "compressHere": ["P"],
+            "extractToOther": ["u"],
+            "extractHere": ["U"],
+            "sortMenu": ["s"],
+            "maskMenu": ["V"],
+            "syncActiveToOther": ["o"],
+            "syncOtherToActive": ["O"],
+            "swapPanes": ["w"],
+            "incrementalSearch": ["/", "f"],
+            "findVirtualDir": ["F"],
+            "grepVirtualDir": ["G"],
+            "jumpMenu": ["j"],
+            "historyMenu": ["H"],
+            "historyBack": ["alt+l"],
+            "historyForward": ["alt+r"],
+            "openTerminal": [":"],
+            "refresh": ["ctrl+l"],
+            "clearLog": ["ctrl+k"],
+            "help": ["?"]
+          },
+          "description": "Customize keybindings for VS Code Filer actions. Map action names to arrays of key strings (e.g. 'ctrl+p', 'alt+a', 'ArrowUp', 'Enter', ' ')."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node esbuild.js --production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
+
