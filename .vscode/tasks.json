@@ -5,16 +5,76 @@
       "label": "watch",
       "type": "npm",
       "script": "watch",
-      "problemMatcher": "$esbuild-watch",
       "isBackground": true,
       "presentation": {
-        "reveal": "never"
+        "reveal": "silent"
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current;${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current\\bin;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": {
+        "owner": "esbuild",
+        "source": "esbuild",
+        "applyTo": "allDocuments",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": [
+          {
+            "regexp": "^✘ \\[ERROR\\] (.+)$",
+            "message": 1
+          },
+          {
+            "regexp": "^\\s+(.+):(\\d+):(\\d+):$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[watch\\] build started$",
+          "endsPattern": "^\\[watch\\] build finished$"
+        }
       },
       "group": {
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "compile",
+      "type": "npm",
+      "script": "compile",
+      "presentation": {
+        "reveal": "silent"
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current;${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current\\bin;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "typecheck",
+      "type": "npm",
+      "script": "typecheck",
+      "presentation": {
+        "reveal": "silent"
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current;${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current\\bin;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": "$tsc"
     }
   ]
 }
-

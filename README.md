@@ -12,7 +12,7 @@ A 3-pane keyboard-driven filer extension for VS Code inspired by `mfiler4`.
   - File marking (`Space`, `[`/`]`, `Home`/`End`, `*` glob, `+` regex).
   - File operations (`c` copy, `m` move, `d` trash, `D` permanent delete, `l` symlink, `r` rename / regex rename, `k` mkdir, `n` new file, `p`/`u` compress & extract).
   - Preview (`v` open document preview via BDF Document Preview).
-  - Virtual directories (`F` find, `G` grep), incremental search (`/` or `f`), bookmarks (`j`), history (`h`, `Alt+L`/`Alt+R`), terminal (`:`).
+  - Virtual directories (`F` find, `G` grep), incremental search (`/` or `f`), bookmarks (`j`), drives / network shares / WSL (`L`), go to path (`g`), history (`h`, `Alt+L`/`Alt+R`), terminal (`:`).
 - **Customizable Keybindings**:
   - Override any keybinding via `vscodeFiler.keybindings` in VS Code settings.
 

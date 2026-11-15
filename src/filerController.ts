@@ -2,6 +2,14 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  DriveEntry,
+  extractUncHost,
+  isUncNotAllowedError,
+  listAvailableLocations,
+  normalizeInputPath,
+  parseWslUncPath,
+} from './core/driveDetector';
 import { FileOperations } from './core/fileOperations';
 import { mergeKeybindings } from './core/keybindings';
 import { OperationLogger } from './core/logger';
@@ -575,6 +583,12 @@ export class FilerController implements vscode.Disposable {
         case 'jumpMenu':
           await this.handleJumpMenu(activeId);
           return;
+        case 'driveMenu':
+          await this.handleDriveMenu(activeId);
+          return;
+        case 'goToPath':
+          await this.handleGoToPath(activeId);
+          return;
         case 'historyMenu':
           await this.handleHistoryMenu(activeId);
           return;
@@ -589,10 +603,17 @@ export class FilerController implements vscode.Disposable {
           }
           return;
         case 'openTerminal': {
-          const terminal = vscode.window.createTerminal({
-            name: `Filer: ${path.basename(activePane.cwd) || activePane.cwd}`,
-            cwd: activePane.cwd,
-          });
+          const wslInfo = parseWslUncPath(activePane.cwd);
+          const terminal = wslInfo
+            ? vscode.window.createTerminal({
+                name: `WSL (${wslInfo.distro}): ${wslInfo.linuxPath}`,
+                shellPath: 'wsl.exe',
+                shellArgs: ['-d', wslInfo.distro, '--cd', wslInfo.linuxPath],
+              })
+            : vscode.window.createTerminal({
+                name: `Filer: ${path.basename(activePane.cwd) || activePane.cwd}`,
+                cwd: activePane.cwd,
+              });
           terminal.show();
           this.logger.info(`Opened terminal at ${activePane.cwd}`);
           return;
@@ -794,9 +815,132 @@ export class FilerController implements vscode.Disposable {
       await this.context.globalState.update(JUMP_BOOKMARKS_KEY, []);
       this.logger.info('Cleared all jump bookmarks.');
     } else if (picked.kindType === 'jump' && picked.path) {
-      await this.paneManager.cd(activeId, picked.path);
+      await this.cdWithUncPrompt(activeId, picked.path);
       this.syncState();
     }
+  }
+
+  private async cdWithUncPrompt(paneId: PaneId, targetPath: string): Promise<void> {
+    try {
+      await this.paneManager.cd(paneId, targetPath);
+    } catch (err) {
+      if (!isUncNotAllowedError(err)) {
+        throw err;
+      }
+
+      const host = extractUncHost(targetPath);
+      if (!host) {
+        throw err;
+      }
+
+      const choice = await vscode.window.showWarningMessage(
+        `UNC host "${host}" is blocked by VS Code's security setting (security.allowedUNCHosts). Add "${host}" to allowed hosts?`,
+        { modal: true },
+        'Allow Host'
+      );
+      this.restoreFocus();
+
+      if (choice !== 'Allow Host') {
+        throw err;
+      }
+
+      const securityConfig = vscode.workspace.getConfiguration('security');
+      const current = securityConfig.get<string[]>('allowedUNCHosts', []);
+      if (!current.some((h) => h.toLowerCase() === host.toLowerCase())) {
+        await securityConfig.update(
+          'allowedUNCHosts',
+          [...current, host],
+          vscode.ConfigurationTarget.Global
+        );
+        this.logger.info(`Added "${host}" to security.allowedUNCHosts.`);
+      }
+
+      try {
+        await this.paneManager.cd(paneId, targetPath);
+      } catch (retryErr) {
+        if (isUncNotAllowedError(retryErr)) {
+          const reload = await vscode.window.showInformationMessage(
+            `"${host}" was added to security.allowedUNCHosts. Reload the window to apply the change.`,
+            'Reload Window'
+          );
+          if (reload === 'Reload Window') {
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+          }
+          return;
+        }
+        throw retryErr;
+      }
+    }
+  }
+
+  private getLocationIcon(kind: DriveEntry['kind']): string {
+    switch (kind) {
+      case 'wsl':
+        return '$(terminal)';
+      case 'network':
+        return '$(remote)';
+      case 'local':
+        return '$(device-desktop)';
+      default:
+        return '$(folder)';
+    }
+  }
+
+  private async handleDriveMenu(activeId: PaneId): Promise<void> {
+    const locations = await listAvailableLocations();
+
+    type DrivePickItem = vscode.QuickPickItem & {
+      kindType: 'input' | 'location';
+      targetPath?: string;
+    };
+
+    const items: DrivePickItem[] = [
+      {
+        label: '$(edit) Enter path manually (Drive / UNC / WSL)...',
+        description: 'e.g. Z:\\, \\\\server\\share, \\\\wsl.localhost\\Ubuntu\\home',
+        kindType: 'input',
+      },
+      ...locations.map((loc) => ({
+        label: `${this.getLocationIcon(loc.kind)} ${loc.label}`,
+        description: loc.detail && loc.detail !== loc.path ? `${loc.path} (${loc.detail})` : loc.path,
+        kindType: 'location' as const,
+        targetPath: loc.path,
+      })),
+    ];
+
+    const picked = await this.promptQuickPick(items, {
+      placeHolder: 'Select drive, network share, or WSL distribution',
+    });
+    if (!picked) {
+      return;
+    }
+
+    if (picked.kindType === 'input') {
+      await this.handleGoToPath(activeId);
+      return;
+    }
+
+    if (picked.targetPath) {
+      await this.cdWithUncPrompt(activeId, picked.targetPath);
+      this.logger.info(`Changed location: ${picked.targetPath}`);
+      this.syncState();
+    }
+  }
+
+  private async handleGoToPath(activeId: PaneId): Promise<void> {
+    const activePane = this.paneManager.getPane(activeId);
+    const input = await this.promptInput({
+      prompt: 'Go to directory (Drive, UNC network path, or WSL path)',
+      value: activePane.cwd,
+      placeHolder: 'D:\\Projects, \\\\server\\share, \\\\wsl.localhost\\Ubuntu\\home',
+    });
+    if (!input) {
+      return;
+    }
+    const targetPath = normalizeInputPath(input, activePane.cwd);
+    await this.cdWithUncPrompt(activeId, targetPath);
+    this.logger.info(`CD: ${targetPath}`);
+    this.syncState();
   }
 
   private async handleHistoryMenu(activeId: PaneId): Promise<void> {
@@ -809,7 +953,7 @@ export class FilerController implements vscode.Disposable {
       placeHolder: 'Directory history',
     });
     if (picked && picked.description) {
-      await this.paneManager.cd(activeId, picked.description);
+      await this.cdWithUncPrompt(activeId, picked.description);
       this.syncState();
     }
   }

@@ -5,10 +5,36 @@
       "name": "Run Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
       "preLaunchTask": "${defaultBuildTask}"
+    },
+    {
+      "name": "Debug Tests (Vitest)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": [
+        "run",
+        "--no-file-parallelism"
+      ],
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "windows": {
+        "env": {
+          "PATH": "${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current;${env:USERPROFILE}\\scoop\\apps\\nodejs-lts\\current\\bin;${env:PATH}"
+        }
+      }
     }
   ]
 }
-

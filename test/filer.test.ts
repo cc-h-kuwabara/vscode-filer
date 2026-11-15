@@ -2,6 +2,13 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  extractUncHost,
+  isUncNotAllowedError,
+  normalizeInputPath,
+  parseWslListOutput,
+  parseWslUncPath,
+} from '../src/core/driveDetector';
 import { FileOperations } from '../src/core/fileOperations';
 import { DEFAULT_KEYBINDINGS, mergeKeybindings } from '../src/core/keybindings';
 import { OperationLogger } from '../src/core/logger';
@@ -120,6 +127,54 @@ describe('VS Code Filer Core', () => {
     expect(merged.copy).toEqual(['F5']);
     expect(merged.customAction).toEqual(['x']);
     expect(merged.move).toEqual(DEFAULT_KEYBINDINGS.move);
+  });
+
+  it('parses wsl.exe -l -q UTF-16LE and UTF-8 output', () => {
+    const utf16 = Buffer.from('\uFEFFUbuntu\r\nDebian\r\ndocker-desktop\r\n', 'utf16le');
+    expect(parseWslListOutput(utf16)).toEqual(['Ubuntu', 'Debian', 'docker-desktop']);
+
+    const utf8 = Buffer.from('Ubuntu-24.04\n\nAlpine\n', 'utf8');
+    expect(parseWslListOutput(utf8)).toEqual(['Ubuntu-24.04', 'Alpine']);
+
+    expect(parseWslListOutput(Buffer.alloc(0))).toEqual([]);
+  });
+
+  it('parses WSL UNC paths into distro and Linux path', () => {
+    expect(parseWslUncPath('\\\\wsl.localhost\\Ubuntu\\home\\user')).toEqual({
+      distro: 'Ubuntu',
+      linuxPath: '/home/user',
+    });
+    expect(parseWslUncPath('\\\\wsl$\\Debian\\')).toEqual({
+      distro: 'Debian',
+      linuxPath: '/',
+    });
+    expect(parseWslUncPath('C:\\Users\\hiro1')).toBeNull();
+  });
+
+  it('normalizes quoted, tilde, bare drive, and UNC paths', () => {
+    const home = path.resolve(os.homedir());
+    expect(normalizeInputPath('~', leftDir, home)).toBe(home);
+    expect(normalizeInputPath('~/sub', leftDir, home)).toBe(path.resolve(home, 'sub'));
+    expect(normalizeInputPath(`"${leftDir}"`, rightDir, home)).toBe(path.resolve(leftDir));
+
+    if (process.platform === 'win32') {
+      expect(normalizeInputPath('Z:', leftDir, home, 'win32')).toBe('Z:\\');
+      expect(normalizeInputPath('//server/share/dir', leftDir, home, 'win32')).toBe(
+        '\\\\server\\share\\dir'
+      );
+    }
+  });
+
+  it('extracts UNC host and detects ERR_UNC_HOST_NOT_ALLOWED errors', () => {
+    expect(extractUncHost('\\\\wsl.localhost\\Ubuntu\\home')).toBe('wsl.localhost');
+    expect(extractUncHost('\\\\fileserver\\public')).toBe('fileserver');
+    expect(extractUncHost('C:\\Users\\hiro1')).toBeNull();
+
+    expect(isUncNotAllowedError({ code: 'ERR_UNC_HOST_NOT_ALLOWED' })).toBe(true);
+    expect(
+      isUncNotAllowedError(new Error("Error [ERR_UNC_HOST_NOT_ALLOWED]: UNC host 'wsl.localhost'"))
+    ).toBe(true);
+    expect(isUncNotAllowedError(new Error('ENOENT'))).toBe(false);
   });
 });
 

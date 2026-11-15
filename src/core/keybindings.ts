@@ -44,6 +44,8 @@ export const DEFAULT_KEYBINDINGS: KeybindingsMap = {
   findVirtualDir: ['F'],
   grepVirtualDir: ['G'],
   jumpMenu: ['j'],
+  driveMenu: ['L'],
+  goToPath: ['g'],
   historyMenu: ['h'],
   historyBack: ['alt+l'],
   historyForward: ['alt+r'],

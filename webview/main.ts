@@ -64,6 +64,8 @@ const ACTION_LABELS: Record<string, string> = {
   findVirtualDir: 'Find (Virtual Dir)',
   grepVirtualDir: 'Grep (Virtual Dir)',
   jumpMenu: 'Bookmarks (Jump)',
+  driveMenu: 'Drives / Network / WSL',
+  goToPath: 'Go to Path',
   historyMenu: 'History Menu',
   historyBack: 'History Back',
   historyForward: 'History Forward',
