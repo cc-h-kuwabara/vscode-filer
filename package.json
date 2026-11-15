@@ -2,7 +2,7 @@
   "name": "vscode-filer",
   "displayName": "VS Code Filer",
   "description": "A 3-pane keyboard-driven filer for VS Code inspired by mfiler4 (2 directory panes + operation log pane).",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "kuwabara",
   "engines": {
     "vscode": "^1.90.0"
