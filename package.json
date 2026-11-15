@@ -32,6 +32,11 @@
           "default": true,
           "description": "Ask for confirmation before permanently deleting files (D)."
         },
+        "vscodeFiler.previewToSide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open BDF Document Preview to the side instead of the active editor group."
+        },
         "vscodeFiler.keybindings": {
           "type": "object",
           "default": {
@@ -45,6 +50,7 @@
             "pageUp": ["PageUp", "ctrl+u", "alt+v"],
             "pageDown": ["PageDown", "ctrl+d", "ctrl+v"],
             "enter": ["Enter"],
+            "preview": ["v"],
             "parentDir": ["Backspace", "ctrl+h", "Delete"],
             "rootDir": ["\\"],
             "homeDir": ["~"],
@@ -77,7 +83,7 @@
             "findVirtualDir": ["F"],
             "grepVirtualDir": ["G"],
             "jumpMenu": ["j"],
-            "historyMenu": ["H"],
+            "historyMenu": ["h"],
             "historyBack": ["alt+l"],
             "historyForward": ["alt+r"],
             "openTerminal": [":"],

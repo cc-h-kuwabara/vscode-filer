@@ -31,6 +31,7 @@ const ACTION_LABELS: Record<string, string> = {
   pageUp: 'Page Up (10 lines)',
   pageDown: 'Page Down (10 lines)',
   enter: 'Open File / Enter Dir',
+  preview: 'BDF Document Preview',
   parentDir: 'Parent Directory',
   rootDir: 'Root Directory',
   homeDir: 'Home Directory',
@@ -387,6 +388,10 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
     }
     case 'help':
       toggleHelp(msg.open);
+      break;
+    case 'focus':
+      window.focus();
+      (document.querySelector('.root') as HTMLElement | null)?.focus();
       break;
   }
 });

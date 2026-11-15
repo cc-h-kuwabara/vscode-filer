@@ -52,7 +52,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'log'; entry: LogEntry }
   | { type: 'clearLogs' }
   | { type: 'prompt'; promptType: PromptRequest }
-  | { type: 'help'; open: boolean };
+  | { type: 'help'; open: boolean }
+  | { type: 'focus' };
 
 export interface PromptRequest {
   id: string;

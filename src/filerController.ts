@@ -1,3 +1,4 @@
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -16,14 +17,23 @@ import {
 } from './core/types';
 
 const JUMP_BOOKMARKS_KEY = 'vscodeFiler.jumpBookmarks';
+const LAST_PANE_DIRS_KEY = 'vscodeFiler.lastPaneDirs';
+
+interface SavedPaneDirs {
+  left: string;
+  right: string;
+}
 
 export class FilerController implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private readonly paneManager: PaneManager;
   private readonly logger: OperationLogger;
   private readonly fileOps: FileOperations;
+  private readonly fallbackDir: string;
   private keybindings: KeybindingsMap;
   private readonly disposables: vscode.Disposable[] = [];
+  private suppressFocusUntil = 0;
+  private lastSavedDirs: SavedPaneDirs | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('vscodeFiler');
@@ -31,18 +41,23 @@ export class FilerController implements vscode.Disposable {
     this.keybindings = mergeKeybindings(config.get<Record<string, unknown>>('keybindings'));
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const initialDir = workspaceRoot || os.homedir();
+    this.fallbackDir = workspaceRoot || os.homedir();
 
-    this.paneManager = new PaneManager(initialDir, initialDir, showDotFiles);
+    const savedDirs = this.context.globalState.get<Partial<SavedPaneDirs>>(LAST_PANE_DIRS_KEY);
+    const leftDir = savedDirs?.left || this.fallbackDir;
+    const rightDir = savedDirs?.right || this.fallbackDir;
+    if (savedDirs?.left && savedDirs?.right) {
+      this.lastSavedDirs = { left: savedDirs.left, right: savedDirs.right };
+    }
+
+    this.paneManager = new PaneManager(leftDir, rightDir, showDotFiles);
     this.logger = new OperationLogger(500);
     this.fileOps = new FileOperations(this.logger, {
       confirmOverwrite: async (targetPath: string) => {
-        const answer = await vscode.window.showWarningMessage(
+        return this.confirmModal(
           `Overwrite existing "${path.basename(targetPath)}"?`,
-          { modal: true },
           'Overwrite'
         );
-        return answer === 'Overwrite';
       },
       moveToTrash: async (targetPath: string) => {
         await vscode.workspace.fs.delete(vscode.Uri.file(targetPath), {
@@ -69,6 +84,8 @@ export class FilerController implements vscode.Disposable {
   }
 
   public async open(): Promise<void> {
+    await this.closeSideBars();
+
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Active);
       return;
@@ -89,7 +106,18 @@ export class FilerController implements vscode.Disposable {
 
     this.panel.onDidDispose(
       () => {
+        this.persistPaneDirs();
         this.panel = undefined;
+      },
+      null,
+      this.disposables
+    );
+
+    this.panel.onDidChangeViewState(
+      (e) => {
+        if (e.webviewPanel.active && Date.now() >= this.suppressFocusUntil) {
+          this.postMessage({ type: 'focus' });
+        }
       },
       null,
       this.disposables
@@ -103,15 +131,97 @@ export class FilerController implements vscode.Disposable {
       this.disposables
     );
 
+    await this.ensureValidPaneDirs();
     await this.paneManager.reloadAll();
     this.logger.info(`Filer opened. Left: ${this.paneManager.getPane(0).cwd} | Right: ${this.paneManager.getPane(1).cwd}`);
+  }
+
+  private async ensureValidPaneDirs(): Promise<void> {
+    const panes = this.paneManager.getPanes();
+    for (const pane of panes) {
+      if (!(await this.isExistingDirectory(pane.cwd))) {
+        await this.paneManager.cd(pane.id, this.fallbackDir, false);
+      }
+    }
+  }
+
+  private async isExistingDirectory(dirPath: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(dirPath);
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  private persistPaneDirs(): void {
+    const [left, right] = this.paneManager.getPanes();
+    if (
+      this.lastSavedDirs &&
+      this.lastSavedDirs.left === left.cwd &&
+      this.lastSavedDirs.right === right.cwd
+    ) {
+      return;
+    }
+    this.lastSavedDirs = { left: left.cwd, right: right.cwd };
+    void this.context.globalState.update(LAST_PANE_DIRS_KEY, this.lastSavedDirs);
+  }
+
+  private async closeSideBars(): Promise<void> {
+    await Promise.all([
+      vscode.commands.executeCommand('workbench.action.closeSidebar').then(undefined, () => { }),
+      vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar').then(undefined, () => { }),
+    ]);
   }
 
   private postMessage(msg: ExtensionToWebviewMessage): void {
     this.panel?.webview.postMessage(msg);
   }
 
+  private restoreFocus(): void {
+    if (!this.panel) {
+      return;
+    }
+    this.panel.reveal(this.panel.viewColumn, false);
+    setTimeout(() => {
+      this.postMessage({ type: 'focus' });
+    }, 50);
+  }
+
+  private async confirmModal(message: string, confirmLabel: string): Promise<boolean> {
+    try {
+      const answer = await vscode.window.showWarningMessage(
+        message,
+        { modal: true },
+        confirmLabel
+      );
+      return answer === confirmLabel;
+    } finally {
+      this.restoreFocus();
+    }
+  }
+
+  private async promptInput(options: vscode.InputBoxOptions): Promise<string | undefined> {
+    try {
+      return await vscode.window.showInputBox(options);
+    } finally {
+      this.restoreFocus();
+    }
+  }
+
+  private async promptQuickPick<T extends vscode.QuickPickItem>(
+    items: readonly T[],
+    options?: vscode.QuickPickOptions
+  ): Promise<T | undefined> {
+    try {
+      return await vscode.window.showQuickPick(items, options);
+    } finally {
+      this.restoreFocus();
+    }
+  }
+
   private syncState(): void {
+    this.persistPaneDirs();
     this.postMessage({
       type: 'state',
       state: {
@@ -205,6 +315,9 @@ export class FilerController implements vscode.Disposable {
         case 'enter':
           await this.handleEnter();
           return;
+        case 'preview':
+          await this.handlePreview();
+          return;
         case 'parentDir':
           await this.paneManager.parentDir(activeId);
           this.syncState();
@@ -240,7 +353,7 @@ export class FilerController implements vscode.Disposable {
           this.syncState();
           return;
         case 'globMark': {
-          const pattern = await vscode.window.showInputBox({
+          const pattern = await this.promptInput({
             prompt: 'Glob pattern to mark (e.g. *.ts)',
             placeHolder: '*.ts',
           });
@@ -252,7 +365,7 @@ export class FilerController implements vscode.Disposable {
           return;
         }
         case 'regexMark': {
-          const pattern = await vscode.window.showInputBox({
+          const pattern = await this.promptInput({
             prompt: 'RegExp pattern to mark',
             placeHolder: '\\.test\\.ts$',
           });
@@ -298,12 +411,11 @@ export class FilerController implements vscode.Disposable {
           if (targets.length === 0) {
             return;
           }
-          const ok = await vscode.window.showWarningMessage(
+          const ok = await this.confirmModal(
             `Move ${targets.length} item(s) to Trash?`,
-            { modal: true },
             'Move to Trash'
           );
-          if (ok === 'Move to Trash') {
+          if (ok) {
             await this.fileOps.trashEntries(targets);
             await this.paneManager.reloadAll();
             this.syncState();
@@ -319,12 +431,11 @@ export class FilerController implements vscode.Disposable {
             .getConfiguration('vscodeFiler')
             .get<boolean>('confirmPermanentDelete', true);
           if (confirm) {
-            const ok = await vscode.window.showWarningMessage(
+            const ok = await this.confirmModal(
               `PERMANENTLY delete ${targets.length} item(s)? This cannot be undone.`,
-              { modal: true },
               'Delete Permanently'
             );
-            if (ok !== 'Delete Permanently') {
+            if (!ok) {
               return;
             }
           }
@@ -347,7 +458,7 @@ export class FilerController implements vscode.Disposable {
           await this.handleRename(activeId);
           return;
         case 'newFile': {
-          const name = await vscode.window.showInputBox({
+          const name = await this.promptInput({
             prompt: 'New file name',
             placeHolder: 'example.txt',
           });
@@ -359,7 +470,7 @@ export class FilerController implements vscode.Disposable {
           return;
         }
         case 'newDir': {
-          const name = await vscode.window.showInputBox({
+          const name = await this.promptInput({
             prompt: 'New directory name (supports nested paths like a/b/c)',
             placeHolder: 'new_folder',
           });
@@ -378,7 +489,7 @@ export class FilerController implements vscode.Disposable {
           }
           const destDir = action === 'compressToOther' ? otherPane.cwd : activePane.cwd;
           const defaultArchive = `${path.basename(targets[0].name)}.tar.gz`;
-          const archiveName = await vscode.window.showInputBox({
+          const archiveName = await this.promptInput({
             prompt: `Archive file name (dest: ${destDir})`,
             value: defaultArchive,
           });
@@ -406,7 +517,7 @@ export class FilerController implements vscode.Disposable {
           await this.handleSortMenu(activeId);
           return;
         case 'maskMenu': {
-          const mask = await vscode.window.showInputBox({
+          const mask = await this.promptInput({
             prompt: 'File mask glob (empty to clear)',
             value: activePane.mask,
             placeHolder: '*.ts',
@@ -434,7 +545,7 @@ export class FilerController implements vscode.Disposable {
           this.syncState();
           return;
         case 'findVirtualDir': {
-          const pattern = await vscode.window.showInputBox({
+          const pattern = await this.promptInput({
             prompt: `Find files in ${activePane.cwd} (glob pattern)`,
             placeHolder: '*.ts',
           });
@@ -448,7 +559,7 @@ export class FilerController implements vscode.Disposable {
           return;
         }
         case 'grepVirtualDir': {
-          const query = await vscode.window.showInputBox({
+          const query = await this.promptInput({
             prompt: `Grep file contents in ${activePane.cwd} (RegExp / text)`,
             placeHolder: 'search term',
           });
@@ -534,19 +645,65 @@ export class FilerController implements vscode.Disposable {
     this.logger.info(`OPEN: ${entry.path}`);
   }
 
+  private async handlePreview(): Promise<void> {
+    const activeId = this.paneManager.getActivePaneId();
+    const entry = this.paneManager.getCursorEntry(activeId);
+    if (!entry) {
+      return;
+    }
+
+    if (entry.name === '..' || entry.isDirectory) {
+      return;
+    }
+
+    const bdfExt = vscode.extensions.getExtension('bdf.bdf-preview');
+    if (!bdfExt) {
+      const msg =
+        'Extension "BDF Document Preview for Visual Studio Code" (bdf.bdf-preview) is not installed.';
+      this.logger.warn(msg);
+      void vscode.window.showWarningMessage(msg);
+      return;
+    }
+
+    const previewToSide = vscode.workspace
+      .getConfiguration('vscodeFiler')
+      .get<boolean>('previewToSide', true);
+    const command = previewToSide ? 'bdf.openPreviewToSide' : 'bdf.openPreview';
+
+    try {
+      const uri = vscode.Uri.file(entry.path);
+      this.suppressFocusUntil = Date.now() + 500;
+      await vscode.commands.executeCommand(command, uri);
+      if (
+        previewToSide &&
+        vscode.window.tabGroups.activeTabGroup.viewColumn === this.panel?.viewColumn
+      ) {
+        await vscode.commands.executeCommand('workbench.action.focusRightGroup');
+      }
+      await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+      this.logger.info(`PREVIEW: ${entry.path}`);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to preview ${entry.name}: ${errMsg}`);
+      void vscode.window.showErrorMessage(
+        `Failed to preview file with BDF Document Preview: ${errMsg}`
+      );
+    }
+  }
+
   private async handleRename(activeId: PaneId): Promise<void> {
     const pane = this.paneManager.getPane(activeId);
     const marked = pane.entries.filter((e) => e.marked && e.name !== '..');
 
     if (marked.length > 0) {
-      const pattern = await vscode.window.showInputBox({
+      const pattern = await this.promptInput({
         prompt: `Regex Rename (${marked.length} marked files) - Search RegExp`,
         placeHolder: '\\.js$',
       });
       if (!pattern) {
         return;
       }
-      const replacement = await vscode.window.showInputBox({
+      const replacement = await this.promptInput({
         prompt: `Regex Rename - Replacement for /${pattern}/`,
         placeHolder: '.ts',
       });
@@ -563,7 +720,7 @@ export class FilerController implements vscode.Disposable {
     if (!current || current.name === '..') {
       return;
     }
-    const newName = await vscode.window.showInputBox({
+    const newName = await this.promptInput({
       prompt: `Rename "${current.name}"`,
       value: current.name,
     });
@@ -585,7 +742,7 @@ export class FilerController implements vscode.Disposable {
       { label: 'Extension (Ascending)', field: 'ext', order: 'asc' },
       { label: 'Extension (Descending)', field: 'ext', order: 'desc' },
     ];
-    const picked = await vscode.window.showQuickPick(options, {
+    const picked = await this.promptQuickPick(options, {
       placeHolder: 'Select sort order',
     });
     if (picked) {
@@ -620,7 +777,7 @@ export class FilerController implements vscode.Disposable {
       });
     }
 
-    const picked = await vscode.window.showQuickPick(items, {
+    const picked = await this.promptQuickPick(items, {
       placeHolder: 'Jump to bookmarked directory',
     });
     if (!picked) {
@@ -648,7 +805,7 @@ export class FilerController implements vscode.Disposable {
       .reverse()
       .map((dirPath) => ({ label: path.basename(dirPath) || dirPath, description: dirPath }));
 
-    const picked = await vscode.window.showQuickPick(items, {
+    const picked = await this.promptQuickPick(items, {
       placeHolder: 'Directory history',
     });
     if (picked && picked.description) {
@@ -707,6 +864,7 @@ export class FilerController implements vscode.Disposable {
       flex-direction: column;
       height: 100vh;
       width: 100vw;
+      outline: none;
     }
 
     .dir-panes {
@@ -941,7 +1099,7 @@ export class FilerController implements vscode.Disposable {
   </style>
 </head>
 <body>
-  <div class="root">
+  <div class="root" tabindex="-1">
     <div class="dir-panes">
       <div class="pane" id="pane-0">
         <div class="pane-header">
@@ -961,7 +1119,7 @@ export class FilerController implements vscode.Disposable {
 
     <div class="log-pane">
       <div class="log-header">
-        <span>Operation Log (Pane 3)</span>
+        <span>Operation Log</span>
         <span>Press ? for Help | Ctrl+K to Clear Log</span>
       </div>
       <div class="log-list" id="log-list"></div>
