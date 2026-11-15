@@ -2,7 +2,7 @@
   "name": "vscode-filer",
   "displayName": "VS Code Filer",
   "description": "A 3-pane keyboard-driven filer for VS Code inspired by mfiler4 (2 directory panes + operation log pane).",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "kuwabara",
   "engines": {
     "vscode": "^1.90.0"
@@ -40,59 +40,178 @@
         "vscodeFiler.keybindings": {
           "type": "object",
           "default": {
-            "cursorUp": ["ArrowUp", "ctrl+p"],
-            "cursorDown": ["ArrowDown", "ctrl+n"],
-            "paneLeft": ["ArrowLeft", "ctrl+b"],
-            "paneRight": ["ArrowRight", "ctrl+f"],
-            "switchPane": ["Tab"],
-            "cursorTop": ["ctrl+a"],
-            "cursorBottom": ["ctrl+e"],
-            "pageUp": ["PageUp", "ctrl+u", "alt+v"],
-            "pageDown": ["PageDown", "ctrl+d", "ctrl+v"],
-            "enter": ["Enter"],
-            "openExternal": ["ctrl+Enter"],
-            "preview": ["v"],
-            "parentDir": ["Backspace", "ctrl+h", "Delete"],
-            "rootDir": ["\\"],
-            "homeDir": ["~"],
-            "toggleMark": [" "],
-            "rangeMarkStart": ["["],
-            "rangeMarkEnd": ["]"],
-            "invertFileMarks": ["Home", "alt+a"],
-            "invertAllMarks": ["End", "alt+e"],
-            "globMark": ["*"],
-            "regexMark": ["+"],
-            "toggleDotFiles": ["."],
-            "copy": ["c"],
-            "move": ["m"],
-            "trash": ["d"],
-            "deletePermanent": ["D"],
-            "symlink": ["l"],
-            "rename": ["r"],
-            "newFile": ["n"],
-            "newDir": ["k"],
-            "compressToOther": ["p"],
-            "compressHere": ["P"],
-            "extractToOther": ["u"],
-            "extractHere": ["U"],
-            "sortMenu": ["s"],
-            "maskMenu": ["V"],
-            "syncActiveToOther": ["o"],
-            "syncOtherToActive": ["O"],
-            "swapPanes": ["w"],
-            "incrementalSearch": ["/", "f"],
-            "findVirtualDir": ["F"],
-            "grepVirtualDir": ["G"],
-            "jumpMenu": ["j"],
-            "driveMenu": ["L"],
-            "goToPath": ["g"],
-            "historyMenu": ["h"],
-            "historyBack": ["alt+l"],
-            "historyForward": ["alt+r"],
-            "openTerminal": [":"],
-            "refresh": ["ctrl+l"],
-            "clearLog": ["ctrl+k"],
-            "help": ["?"]
+            "cursorUp": [
+              "ArrowUp",
+              "ctrl+p"
+            ],
+            "cursorDown": [
+              "ArrowDown",
+              "ctrl+n"
+            ],
+            "paneLeft": [
+              "ArrowLeft",
+              "ctrl+b"
+            ],
+            "paneRight": [
+              "ArrowRight",
+              "ctrl+f"
+            ],
+            "switchPane": [
+              "Tab"
+            ],
+            "cursorTop": [
+              "ctrl+a"
+            ],
+            "cursorBottom": [
+              "ctrl+e"
+            ],
+            "pageUp": [
+              "PageUp",
+              "ctrl+u",
+              "alt+v"
+            ],
+            "pageDown": [
+              "PageDown",
+              "ctrl+d",
+              "ctrl+v"
+            ],
+            "enter": [
+              "Enter"
+            ],
+            "openExternal": [
+              "ctrl+Enter"
+            ],
+            "preview": [
+              "v"
+            ],
+            "parentDir": [
+              "Backspace",
+              "ctrl+h",
+              "Delete"
+            ],
+            "rootDir": [
+              "\\"
+            ],
+            "homeDir": [
+              "~"
+            ],
+            "toggleMark": [
+              " "
+            ],
+            "rangeMarkStart": [
+              "["
+            ],
+            "rangeMarkEnd": [
+              "]"
+            ],
+            "invertFileMarks": [
+              "Home",
+              "alt+a"
+            ],
+            "invertAllMarks": [
+              "End",
+              "alt+e"
+            ],
+            "globMark": [
+              "*"
+            ],
+            "regexMark": [
+              "+"
+            ],
+            "toggleDotFiles": [
+              "."
+            ],
+            "copy": [
+              "c"
+            ],
+            "move": [
+              "m"
+            ],
+            "trash": [
+              "d"
+            ],
+            "deletePermanent": [
+              "D"
+            ],
+            "symlink": [
+              "l"
+            ],
+            "rename": [
+              "r"
+            ],
+            "newFile": [
+              "n"
+            ],
+            "newDir": [
+              "k"
+            ],
+            "compressToOther": [
+              "p"
+            ],
+            "compressHere": [
+              "P"
+            ],
+            "extractToOther": [
+              "u"
+            ],
+            "extractHere": [
+              "U"
+            ],
+            "sortMenu": [
+              "s"
+            ],
+            "maskMenu": [
+              "V"
+            ],
+            "syncActiveToOther": [
+              "o"
+            ],
+            "syncOtherToActive": [
+              "O"
+            ],
+            "swapPanes": [
+              "w"
+            ],
+            "incrementalSearch": [
+              "/",
+              "f"
+            ],
+            "findVirtualDir": [
+              "F"
+            ],
+            "grepVirtualDir": [
+              "G"
+            ],
+            "jumpMenu": [
+              "j"
+            ],
+            "driveMenu": [
+              "L"
+            ],
+            "goToPath": [
+              "g"
+            ],
+            "historyMenu": [
+              "h"
+            ],
+            "historyBack": [
+              "alt+l"
+            ],
+            "historyForward": [
+              "alt+r"
+            ],
+            "openTerminal": [
+              ":"
+            ],
+            "refresh": [
+              "ctrl+l"
+            ],
+            "clearLog": [
+              "ctrl+k"
+            ],
+            "help": [
+              "?"
+            ]
           },
           "description": "Customize keybindings for VS Code Filer actions. Map action names to arrays of key strings (e.g. 'ctrl+p', 'alt+a', 'ArrowUp', 'Enter', ' ')."
         }
@@ -115,4 +234,3 @@
     "vitest": "^3.0.0"
   }
 }
-
