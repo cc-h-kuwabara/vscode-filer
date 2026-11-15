@@ -31,6 +31,7 @@ const ACTION_LABELS: Record<string, string> = {
   pageUp: 'Page Up (10 lines)',
   pageDown: 'Page Down (10 lines)',
   enter: 'Open File / Enter Dir',
+  openExternal: 'Open with OS Default App',
   preview: 'BDF Document Preview',
   parentDir: 'Parent Directory',
   rootDir: 'Root Directory',
@@ -100,6 +101,8 @@ function normalizeKeyBinding(binding: string): string {
   let key = rawKey === ' ' ? ' ' : rawKey.trim();
   if (key.toLowerCase() === 'space') {
     key = ' ';
+  } else if (key.toLowerCase() === 'enter') {
+    key = 'Enter';
   }
   if (modifiers.length > 0 && key.length === 1) {
     key = key.toLowerCase();

@@ -119,6 +119,7 @@ describe('VS Code Filer Core', () => {
 
   it('merges user keybindings over defaults', () => {
     expect(DEFAULT_KEYBINDINGS.preview).toEqual(['v']);
+    expect(DEFAULT_KEYBINDINGS.openExternal).toEqual(['ctrl+Enter']);
     expect(DEFAULT_KEYBINDINGS.historyMenu).toEqual(['h']);
     const merged = mergeKeybindings({
       copy: ['F5'],

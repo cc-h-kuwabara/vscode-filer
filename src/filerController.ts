@@ -1,7 +1,11 @@
+import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
 import * as vscode from 'vscode';
+
+const execFileAsync = promisify(execFile);
 import {
   DriveEntry,
   extractUncHost,
@@ -322,6 +326,9 @@ export class FilerController implements vscode.Disposable {
           return;
         case 'enter':
           await this.handleEnter();
+          return;
+        case 'openExternal':
+          await this.handleOpenExternal();
           return;
         case 'preview':
           await this.handlePreview();
@@ -664,6 +671,27 @@ export class FilerController implements vscode.Disposable {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.path));
     await vscode.window.showTextDocument(doc, { preview: false });
     this.logger.info(`OPEN: ${entry.path}`);
+  }
+
+  private async handleOpenExternal(): Promise<void> {
+    const activeId = this.paneManager.getActivePaneId();
+    const entry = this.paneManager.getCursorEntry(activeId);
+    if (!entry || entry.name === '..') {
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      await execFileAsync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:VSCODE_FILER_TARGET'],
+        { env: { ...process.env, VSCODE_FILER_TARGET: entry.path } }
+      );
+    } else if (process.platform === 'darwin') {
+      await execFileAsync('open', [entry.path]);
+    } else {
+      await execFileAsync('xdg-open', [entry.path]);
+    }
+    this.logger.info(`OPEN (OS): ${entry.path}`);
   }
 
   private async handlePreview(): Promise<void> {

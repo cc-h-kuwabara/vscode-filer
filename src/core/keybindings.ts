@@ -11,6 +11,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingsMap = {
   pageUp: ['PageUp', 'ctrl+u', 'alt+v'],
   pageDown: ['PageDown', 'ctrl+d', 'ctrl+v'],
   enter: ['Enter'],
+  openExternal: ['ctrl+Enter'],
   preview: ['v'],
   parentDir: ['Backspace', 'ctrl+h', 'Delete'],
   rootDir: ['\\'],
