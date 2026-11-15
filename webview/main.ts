@@ -45,6 +45,8 @@ const ACTION_LABELS: Record<string, string> = {
   regexMark: 'RegExp Mark',
   toggleDotFiles: 'Toggle Dotfiles',
   copy: 'Copy to Other Pane',
+  copyPath: 'Copy Path to Clipboard',
+  copyFileName: 'Copy File Name to Clipboard',
   move: 'Move to Other Pane',
   trash: 'Move to Trash',
   deletePermanent: 'Delete Permanently',

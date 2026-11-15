@@ -19,6 +19,7 @@ import { mergeKeybindings } from './core/keybindings';
 import { OperationLogger } from './core/logger';
 import { PaneManager } from './core/paneManager';
 import { findEntries, grepEntries } from './core/search';
+import { extractArchiveEntryToTempFile, isSupportedArchive } from './core/archiveReader';
 import {
   ExtensionToWebviewMessage,
   KeybindingsMap,
@@ -411,6 +412,27 @@ export class FilerController implements vscode.Disposable {
           this.syncState();
           return;
         }
+        case 'copyPath': {
+          const entry = this.paneManager.getCursorEntry(activeId);
+          if (!entry) {
+            return;
+          }
+          const targetPath = entry.name === '..' ? activePane.cwd : entry.path;
+          await vscode.env.clipboard.writeText(targetPath);
+          this.logger.info(`COPY PATH: ${targetPath}`);
+          return;
+        }
+        case 'copyFileName': {
+          const entry = this.paneManager.getCursorEntry(activeId);
+          if (!entry) {
+            return;
+          }
+          const targetPath = entry.name === '..' ? activePane.cwd : entry.path;
+          const fileName = path.basename(targetPath) || targetPath;
+          await vscode.env.clipboard.writeText(fileName);
+          this.logger.info(`COPY NAME: ${fileName}`);
+          return;
+        }
         case 'move': {
           const targets = this.paneManager.getTargetEntries(activeId);
           if (targets.length === 0) {
@@ -503,7 +525,7 @@ export class FilerController implements vscode.Disposable {
             return;
           }
           const destDir = action === 'compressToOther' ? otherPane.cwd : activePane.cwd;
-          const defaultArchive = `${path.basename(targets[0].name)}.tar.gz`;
+          const defaultArchive = `${path.basename(targets[0].name)}.zip`;
           const archiveName = await this.promptInput({
             prompt: `Archive file name (dest: ${destDir})`,
             value: defaultArchive,
@@ -649,8 +671,22 @@ export class FilerController implements vscode.Disposable {
     // Reserved for future inline minibuffer prompts
   }
 
+  private async resolveEntryFilePath(
+    pane: ReturnType<PaneManager['getPane']>,
+    entry: NonNullable<ReturnType<PaneManager['getCursorEntry']>>
+  ): Promise<string> {
+    if (!pane.virtualArchive) {
+      return entry.path;
+    }
+    const innerPath = pane.virtualArchive.innerDir
+      ? `${pane.virtualArchive.innerDir}/${entry.name}`
+      : entry.name;
+    return extractArchiveEntryToTempFile(pane.virtualArchive.archivePath, innerPath);
+  }
+
   private async handleEnter(): Promise<void> {
     const activeId = this.paneManager.getActivePaneId();
+    const activePane = this.paneManager.getPane(activeId);
     const entry = this.paneManager.getCursorEntry(activeId);
     if (!entry) {
       return;
@@ -662,8 +698,36 @@ export class FilerController implements vscode.Disposable {
       return;
     }
 
+    if (activePane.virtualArchive) {
+      if (entry.isDirectory) {
+        const nextInnerDir = activePane.virtualArchive.innerDir
+          ? `${activePane.virtualArchive.innerDir}/${entry.name}`
+          : entry.name;
+        await this.paneManager.enterArchive(
+          activeId,
+          activePane.virtualArchive.archivePath,
+          nextInnerDir
+        );
+        this.syncState();
+        return;
+      }
+
+      const tempPath = await this.resolveEntryFilePath(activePane, entry);
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(tempPath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      this.logger.info(`OPEN (ARCHIVE): ${entry.path}`);
+      return;
+    }
+
     if (entry.isDirectory) {
       await this.paneManager.cd(activeId, entry.path);
+      this.syncState();
+      return;
+    }
+
+    if (isSupportedArchive(entry.name)) {
+      await this.paneManager.enterArchive(activeId, entry.path, '');
+      this.logger.info(`OPEN ARCHIVE: ${entry.path}`);
       this.syncState();
       return;
     }
@@ -675,27 +739,33 @@ export class FilerController implements vscode.Disposable {
 
   private async handleOpenExternal(): Promise<void> {
     const activeId = this.paneManager.getActivePaneId();
+    const activePane = this.paneManager.getPane(activeId);
     const entry = this.paneManager.getCursorEntry(activeId);
     if (!entry || entry.name === '..') {
       return;
     }
+    if (activePane.virtualArchive && entry.isDirectory) {
+      return;
+    }
 
+    const targetPath = await this.resolveEntryFilePath(activePane, entry);
     if (process.platform === 'win32') {
       await execFileAsync(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:VSCODE_FILER_TARGET'],
-        { env: { ...process.env, VSCODE_FILER_TARGET: entry.path } }
+        { env: { ...process.env, VSCODE_FILER_TARGET: targetPath } }
       );
     } else if (process.platform === 'darwin') {
-      await execFileAsync('open', [entry.path]);
+      await execFileAsync('open', [targetPath]);
     } else {
-      await execFileAsync('xdg-open', [entry.path]);
+      await execFileAsync('xdg-open', [targetPath]);
     }
     this.logger.info(`OPEN (OS): ${entry.path}`);
   }
 
   private async handlePreview(): Promise<void> {
     const activeId = this.paneManager.getActivePaneId();
+    const activePane = this.paneManager.getPane(activeId);
     const entry = this.paneManager.getCursorEntry(activeId);
     if (!entry) {
       return;
@@ -720,7 +790,8 @@ export class FilerController implements vscode.Disposable {
     const command = previewToSide ? 'bdf.openPreviewToSide' : 'bdf.openPreview';
 
     try {
-      const uri = vscode.Uri.file(entry.path);
+      const targetPath = await this.resolveEntryFilePath(activePane, entry);
+      const uri = vscode.Uri.file(targetPath);
       this.suppressFocusUntil = Date.now() + 500;
       await vscode.commands.executeCommand(command, uri);
       if (

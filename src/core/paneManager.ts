@@ -1,7 +1,9 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { getArchiveKind, listArchiveDirectory } from './archiveReader';
 import { FileEntry, PaneId, PaneState, SortField, SortOrder } from './types';
+import { sortFileEntries } from './zipReader';
 
 export function globToRegExp(pattern: string): RegExp {
   const escaped = pattern
@@ -82,12 +84,33 @@ export class PaneManager {
 
   public async reloadPane(id: PaneId, preserveSelectionName?: string): Promise<void> {
     const pane = this.panes[id];
-    if (pane.isVirtual) {
+    const prevName =
+      preserveSelectionName ?? pane.entries[pane.cursor]?.name;
+
+    if (pane.virtualArchive) {
+      pane.entries = await listArchiveDirectory(
+        pane.virtualArchive.archivePath,
+        pane.virtualArchive.innerDir,
+        {
+          showDotFiles: pane.showDotFiles,
+          sortField: pane.sortField,
+          sortOrder: pane.sortOrder,
+          mask: pane.mask,
+        }
+      );
+      this.rangeMarkAnchor[id] = null;
+      if (prevName) {
+        const idx = pane.entries.findIndex((e) => e.name === prevName);
+        pane.cursor = idx >= 0 ? idx : Math.min(pane.cursor, Math.max(0, pane.entries.length - 1));
+      } else {
+        pane.cursor = Math.min(pane.cursor, Math.max(0, pane.entries.length - 1));
+      }
       return;
     }
 
-    const prevName =
-      preserveSelectionName ?? pane.entries[pane.cursor]?.name;
+    if (pane.isVirtual) {
+      return;
+    }
 
     const dirents = await fs.readdir(pane.cwd, { withFileTypes: true });
     const entries: FileEntry[] = [];
@@ -164,7 +187,7 @@ export class PaneManager {
     );
 
     const validItems = items.filter((item): item is FileEntry => item !== null);
-    this.sortEntries(validItems, pane.sortField, pane.sortOrder);
+    sortFileEntries(validItems, pane.sortField, pane.sortOrder);
 
     pane.entries = [...entries, ...validItems];
     this.rangeMarkAnchor[id] = null;
@@ -181,38 +204,6 @@ export class PaneManager {
     }
   }
 
-  private sortEntries(entries: FileEntry[], field: SortField, order: SortOrder): void {
-    const dirFactor = order === 'asc' ? 1 : -1;
-    entries.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) {
-        return a.isDirectory ? -1 : 1;
-      }
-      let cmp = 0;
-      switch (field) {
-        case 'size':
-          cmp = a.size - b.size;
-          break;
-        case 'mtime':
-          cmp = a.mtimeMs - b.mtimeMs;
-          break;
-        case 'ext': {
-          const extA = path.extname(a.name).toLowerCase();
-          const extB = path.extname(b.name).toLowerCase();
-          cmp = extA.localeCompare(extB);
-          break;
-        }
-        case 'name':
-        default:
-          cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-          break;
-      }
-      if (cmp === 0) {
-        cmp = a.name.localeCompare(b.name);
-      }
-      return cmp * dirFactor;
-    });
-  }
-
   public async cd(id: PaneId, targetDir: string, recordHistory = true, focusChildName?: string): Promise<void> {
     const pane = this.panes[id];
     const resolved = path.resolve(pane.cwd, targetDir);
@@ -223,6 +214,7 @@ export class PaneManager {
 
     pane.isVirtual = false;
     pane.virtualLabel = undefined;
+    pane.virtualArchive = undefined;
     pane.cwd = resolved;
     pane.cursor = 0;
 
@@ -240,8 +232,49 @@ export class PaneManager {
     await this.reloadPane(id, focusChildName);
   }
 
+  public async enterArchive(
+    id: PaneId,
+    archivePath: string,
+    innerDir = '',
+    focusChildName?: string
+  ): Promise<void> {
+    const pane = this.panes[id];
+    const normalizedInner = innerDir.replace(/^\/+|\/+$/g, '');
+    const archiveName = path.basename(archivePath);
+    const kind = (getArchiveKind(archiveName) ?? 'zip').toUpperCase();
+
+    pane.isVirtual = true;
+    pane.virtualArchive = {
+      archivePath,
+      archiveName,
+      innerDir: normalizedInner,
+    };
+    pane.virtualLabel = normalizedInner
+      ? `[${kind}: ${archiveName}/${normalizedInner}]`
+      : `[${kind}: ${archiveName}]`;
+    pane.cursor = 0;
+
+    await this.reloadPane(id, focusChildName);
+  }
+
   public async parentDir(id: PaneId): Promise<void> {
     const pane = this.panes[id];
+    if (pane.virtualArchive) {
+      const { archivePath, archiveName, innerDir } = pane.virtualArchive;
+      if (!innerDir) {
+        pane.virtualArchive = undefined;
+        pane.isVirtual = false;
+        pane.virtualLabel = undefined;
+        await this.reloadPane(id, archiveName);
+        return;
+      }
+      const parts = innerDir.split('/');
+      const currentFolder = parts.pop();
+      const parentInnerDir = parts.join('/');
+      await this.enterArchive(id, archivePath, parentInnerDir, currentFolder);
+      return;
+    }
+
     if (pane.isVirtual) {
       pane.isVirtual = false;
       pane.virtualLabel = undefined;
@@ -423,6 +456,7 @@ export class PaneManager {
     const pane = this.panes[id];
     pane.isVirtual = true;
     pane.virtualLabel = label;
+    pane.virtualArchive = undefined;
     pane.entries = entries;
     pane.cursor = 0;
   }

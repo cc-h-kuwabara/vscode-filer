@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { extractArchiveEntryToTempFile } from '../src/core/archiveReader';
 import {
   extractUncHost,
   isUncNotAllowedError,
@@ -120,6 +121,10 @@ describe('VS Code Filer Core', () => {
   it('merges user keybindings over defaults', () => {
     expect(DEFAULT_KEYBINDINGS.preview).toEqual(['v']);
     expect(DEFAULT_KEYBINDINGS.openExternal).toEqual(['ctrl+Enter']);
+    expect(DEFAULT_KEYBINDINGS.driveMenu).toEqual(['l']);
+    expect(DEFAULT_KEYBINDINGS.symlink).toEqual(['L']);
+    expect(DEFAULT_KEYBINDINGS.copyPath).toEqual(['@']);
+    expect(DEFAULT_KEYBINDINGS.copyFileName).toEqual(['`']);
     expect(DEFAULT_KEYBINDINGS.historyMenu).toEqual(['h']);
     const merged = mergeKeybindings({
       copy: ['F5'],
@@ -176,6 +181,98 @@ describe('VS Code Filer Core', () => {
       isUncNotAllowedError(new Error("Error [ERR_UNC_HOST_NOT_ALLOWED]: UNC host 'wsl.localhost'"))
     ).toBe(true);
     expect(isUncNotAllowedError(new Error('ENOENT'))).toBe(false);
+  });
+
+  it('compresses and extracts .zip archives', async () => {
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger);
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+
+    const alpha = pm.getPane(0).entries.find((e) => e.name === 'alpha.ts')!;
+    const zipPath = path.join(rightDir, 'alpha.zip');
+    expect(await ops.compressEntries([alpha], leftDir, zipPath)).toBe(true);
+
+    const zipStat = await fs.stat(zipPath);
+    expect(zipStat.isFile()).toBe(true);
+
+    const extractDir = path.join(tmpRoot, 'extracted');
+    await fs.mkdir(extractDir, { recursive: true });
+    expect(await ops.extractArchive(zipPath, extractDir)).toBe(true);
+    const content = await fs.readFile(path.join(extractDir, 'alpha.ts'), 'utf8');
+    expect(content).toBe('console.log("a");');
+  });
+
+  it('browses .zip archives as virtual directories and extracts entries', async () => {
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger);
+
+    await fs.writeFile(path.join(leftDir, 'subA', 'nested.txt'), 'hello zip');
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+
+    const subA = pm.getPane(0).entries.find((e) => e.name === 'subA')!;
+    const alpha = pm.getPane(0).entries.find((e) => e.name === 'alpha.ts')!;
+    const zipPath = path.join(rightDir, 'bundle.zip');
+    expect(await ops.compressEntries([subA, alpha], leftDir, zipPath)).toBe(true);
+
+    await pm.enterArchive(1, zipPath, '');
+    const rootPane = pm.getPane(1);
+    expect(rootPane.isVirtual).toBe(true);
+    expect(rootPane.virtualLabel).toBe('[ZIP: bundle.zip]');
+    expect(rootPane.entries.map((e) => e.name)).toEqual(['..', 'subA', 'alpha.ts']);
+
+    await pm.enterArchive(1, zipPath, 'subA');
+    const subPane = pm.getPane(1);
+    expect(subPane.virtualLabel).toBe('[ZIP: bundle.zip/subA]');
+    expect(subPane.entries.map((e) => e.name)).toEqual(['..', 'nested.txt']);
+
+    const extractedTemp = await extractArchiveEntryToTempFile(zipPath, 'subA/nested.txt');
+    expect(await fs.readFile(extractedTemp, 'utf8')).toBe('hello zip');
+
+    await pm.parentDir(1);
+    expect(pm.getPane(1).virtualLabel).toBe('[ZIP: bundle.zip]');
+    expect(pm.getPane(1).entries[pm.getPane(1).cursor]?.name).toBe('subA');
+
+    await pm.parentDir(1);
+    expect(pm.getPane(1).isVirtual).toBe(false);
+    expect(pm.getPane(1).entries[pm.getPane(1).cursor]?.name).toBe('bundle.zip');
+  });
+
+  it('browses .tar and .tar.gz archives as virtual directories', async () => {
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger);
+
+    await fs.writeFile(path.join(leftDir, 'subA', 'tar-item.txt'), 'hello tar');
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+
+    const subA = pm.getPane(0).entries.find((e) => e.name === 'subA')!;
+    const alpha = pm.getPane(0).entries.find((e) => e.name === 'alpha.ts')!;
+
+    const tarPath = path.join(rightDir, 'bundle.tar');
+    expect(await ops.compressEntries([subA, alpha], leftDir, tarPath)).toBe(true);
+
+    await pm.enterArchive(1, tarPath, '');
+    expect(pm.getPane(1).virtualLabel).toBe('[TAR: bundle.tar]');
+    expect(pm.getPane(1).entries.map((e) => e.name)).toEqual(['..', 'subA', 'alpha.ts']);
+
+    await pm.enterArchive(1, tarPath, 'subA');
+    expect(pm.getPane(1).virtualLabel).toBe('[TAR: bundle.tar/subA]');
+    expect(pm.getPane(1).entries.map((e) => e.name)).toEqual(['..', 'tar-item.txt']);
+
+    const extractedTar = await extractArchiveEntryToTempFile(tarPath, 'subA/tar-item.txt');
+    expect(await fs.readFile(extractedTar, 'utf8')).toBe('hello tar');
+
+    const tgzPath = path.join(rightDir, 'bundle.tar.gz');
+    expect(await ops.compressEntries([subA, alpha], leftDir, tgzPath)).toBe(true);
+
+    await pm.enterArchive(1, tgzPath, '');
+    expect(pm.getPane(1).virtualLabel).toBe('[TAR.GZ: bundle.tar.gz]');
+    expect(pm.getPane(1).entries.map((e) => e.name)).toEqual(['..', 'subA', 'alpha.ts']);
+
+    const extractedTgz = await extractArchiveEntryToTempFile(tgzPath, 'subA/tar-item.txt');
+    expect(await fs.readFile(extractedTgz, 'utf8')).toBe('hello tar');
   });
 });
 

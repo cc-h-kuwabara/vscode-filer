@@ -233,7 +233,11 @@ export class FileOperations {
 
     try {
       if (lower.endsWith('.zip')) {
-        await execFileAsync('zip', ['-r', archivePath, ...names], { cwd: sourceCwd });
+        if (process.platform === 'win32') {
+          await execFileAsync('tar', ['-a', '-cf', archivePath, ...names], { cwd: sourceCwd });
+        } else {
+          await execFileAsync('zip', ['-r', archivePath, ...names], { cwd: sourceCwd });
+        }
       } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
         await execFileAsync('tar', ['-czf', archivePath, ...names], { cwd: sourceCwd });
       } else if (lower.endsWith('.tar')) {
@@ -256,7 +260,11 @@ export class FileOperations {
     const lower = archivePath.toLowerCase();
     try {
       if (lower.endsWith('.zip')) {
-        await execFileAsync('unzip', ['-o', archivePath, '-d', destDir]);
+        if (process.platform === 'win32') {
+          await execFileAsync('tar', ['-xf', archivePath, '-C', destDir]);
+        } else {
+          await execFileAsync('unzip', ['-o', archivePath, '-d', destDir]);
+        }
       } else if (
         lower.endsWith('.tar.gz') ||
         lower.endsWith('.tgz') ||

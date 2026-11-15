@@ -124,6 +124,12 @@
             "copy": [
               "c"
             ],
+            "copyPath": [
+              "@"
+            ],
+            "copyFileName": [
+              "`"
+            ],
             "move": [
               "m"
             ],
@@ -134,7 +140,7 @@
               "D"
             ],
             "symlink": [
-              "l"
+              "L"
             ],
             "rename": [
               "r"
@@ -186,7 +192,7 @@
               "j"
             ],
             "driveMenu": [
-              "L"
+              "l"
             ],
             "goToPath": [
               "g"

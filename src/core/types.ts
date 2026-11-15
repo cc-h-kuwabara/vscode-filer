@@ -15,6 +15,12 @@ export interface FileEntry {
   marked: boolean;
 }
 
+export interface VirtualArchiveState {
+  archivePath: string;
+  archiveName: string;
+  innerDir: string;
+}
+
 export interface PaneState {
   id: PaneId;
   cwd: string;
@@ -26,6 +32,7 @@ export interface PaneState {
   mask: string;
   isVirtual: boolean;
   virtualLabel?: string;
+  virtualArchive?: VirtualArchiveState;
   history: string[];
   historyIndex: number;
 }
