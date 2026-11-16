@@ -8,6 +8,10 @@ export interface FileEntry {
   path: string;
   isDirectory: boolean;
   isSymlink: boolean;
+  isBrokenSymlink?: boolean;
+  isReadOnly?: boolean;
+  isHidden?: boolean;
+  isExecutable?: boolean;
   linkTarget?: string;
   size: number;
   mtimeMs: number;

@@ -170,6 +170,13 @@ function formatDate(mtimeMs: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const ARCHIVE_EXTENSIONS = ['.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar'];
+
+function isArchiveName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 function renderPane(pane: PaneState, isActive: boolean): void {
   const paneEl = document.getElementById(`pane-${pane.id}`);
   const pathEl = document.getElementById(`pane-${pane.id}-path`);
@@ -215,6 +222,21 @@ function renderPane(pane: PaneState, isActive: boolean): void {
     }
     if (entry.isSymlink) {
       nameSpan.classList.add('is-link');
+    }
+    if (entry.isBrokenSymlink) {
+      nameSpan.classList.add('is-broken-link');
+    }
+    if (entry.isExecutable) {
+      nameSpan.classList.add('is-exec');
+    }
+    if (!entry.isDirectory && isArchiveName(entry.name)) {
+      nameSpan.classList.add('is-archive');
+    }
+    if (entry.isReadOnly) {
+      nameSpan.classList.add('is-readonly');
+    }
+    if (entry.isHidden) {
+      nameSpan.classList.add('is-hidden');
     }
     nameSpan.textContent = entry.isSymlink && entry.linkTarget
       ? `${entry.name} -> ${entry.linkTarget}`

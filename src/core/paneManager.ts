@@ -13,6 +13,27 @@ export function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, 'i');
 }
 
+const EXECUTABLE_EXTENSIONS = new Set(['.exe', '.cmd', '.bat', '.ps1', '.com', '.msi']);
+
+export function isExecutableFile(
+  name: string,
+  isDirectory: boolean,
+  mode: number,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  if (isDirectory) {
+    return false;
+  }
+  if (platform === 'win32') {
+    return EXECUTABLE_EXTENSIONS.has(path.extname(name).toLowerCase());
+  }
+  return (mode & 0o111) !== 0;
+}
+
+export function isReadOnlyMode(mode: number, statOk: boolean): boolean {
+  return statOk && (mode & 0o222) === 0;
+}
+
 export class PaneManager {
   private panes: [PaneState, PaneState];
   private activePane: PaneId = 0;
@@ -141,6 +162,8 @@ export class PaneManager {
         const fullPath = path.join(pane.cwd, name);
         let isDirectory = dirent.isDirectory();
         const isSymlink = dirent.isSymbolicLink();
+        let isBrokenSymlink = false;
+        let statOk = false;
         let linkTarget: string | undefined;
         let size = 0;
         let mtimeMs = 0;
@@ -148,6 +171,7 @@ export class PaneManager {
 
         try {
           const lstat = await fs.lstat(fullPath);
+          statOk = true;
           size = lstat.size;
           mtimeMs = lstat.mtimeMs;
           mode = lstat.mode;
@@ -159,9 +183,11 @@ export class PaneManager {
               isDirectory = stat.isDirectory();
               size = stat.size;
               mtimeMs = stat.mtimeMs;
+              mode = stat.mode;
             } catch {
               // Broken symlink
               isDirectory = false;
+              isBrokenSymlink = true;
             }
           }
         } catch {
@@ -172,11 +198,19 @@ export class PaneManager {
           return null;
         }
 
+        const isHidden = name.startsWith('.') && name !== '..';
+        const isReadOnly = !isBrokenSymlink && isReadOnlyMode(mode, statOk);
+        const isExecutable = !isBrokenSymlink && isExecutableFile(name, isDirectory, mode);
+
         return {
           name,
           path: fullPath,
           isDirectory,
           isSymlink,
+          isBrokenSymlink,
+          isReadOnly,
+          isHidden,
+          isExecutable,
           linkTarget,
           size,
           mtimeMs,

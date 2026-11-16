@@ -13,7 +13,7 @@ import {
 import { FileOperations } from '../src/core/fileOperations';
 import { DEFAULT_KEYBINDINGS, mergeKeybindings } from '../src/core/keybindings';
 import { OperationLogger } from '../src/core/logger';
-import { PaneManager } from '../src/core/paneManager';
+import { isExecutableFile, isReadOnlyMode, PaneManager } from '../src/core/paneManager';
 
 describe('VS Code Filer Core', () => {
   let tmpRoot: string;
@@ -273,6 +273,49 @@ describe('VS Code Filer Core', () => {
 
     const extractedTgz = await extractArchiveEntryToTempFile(tgzPath, 'subA/tar-item.txt');
     expect(await fs.readFile(extractedTgz, 'utf8')).toBe('hello tar');
+  });
+
+  it('detects file attributes (hidden, executable, read-only) on entries', async () => {
+    expect(isExecutableFile('app.exe', false, 0o644, 'win32')).toBe(true);
+    expect(isExecutableFile('run.ps1', false, 0o644, 'win32')).toBe(true);
+    expect(isExecutableFile('notes.txt', false, 0o644, 'win32')).toBe(false);
+    expect(isExecutableFile('folder.exe', true, 0o755, 'win32')).toBe(false);
+
+    expect(isExecutableFile('script.sh', false, 0o755, 'linux')).toBe(true);
+    expect(isExecutableFile('notes.txt', false, 0o644, 'linux')).toBe(false);
+    expect(isExecutableFile('dir', true, 0o755, 'linux')).toBe(false);
+
+    expect(isReadOnlyMode(0o444, true)).toBe(true);
+    expect(isReadOnlyMode(0o644, true)).toBe(false);
+    expect(isReadOnlyMode(0o444, false)).toBe(false);
+
+    const roPath = path.join(leftDir, 'readonly.txt');
+    await fs.writeFile(roPath, 'ro');
+    await fs.chmod(roPath, 0o444);
+
+    const exePath = path.join(leftDir, 'tool.cmd');
+    await fs.writeFile(exePath, '@echo off');
+
+    const pm = new PaneManager(leftDir, rightDir, true);
+    await pm.reloadAll();
+    const entries = pm.getPane(0).entries;
+
+    const parentEntry = entries.find((e) => e.name === '..')!;
+    expect(parentEntry.isHidden).toBeFalsy();
+
+    const hiddenEntry = entries.find((e) => e.name === '.hidden')!;
+    expect(hiddenEntry.isHidden).toBe(true);
+
+    const roEntry = entries.find((e) => e.name === 'readonly.txt')!;
+    expect(roEntry.isReadOnly).toBe(true);
+
+    const exeEntry = entries.find((e) => e.name === 'tool.cmd')!;
+    if (process.platform === 'win32') {
+      expect(exeEntry.isExecutable).toBe(true);
+    }
+
+    // Cleanup read-only bit so afterEach fs.rm succeeds cleanly on Windows
+    await fs.chmod(roPath, 0o666);
   });
 });
 

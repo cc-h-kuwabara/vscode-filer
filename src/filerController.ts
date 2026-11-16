@@ -1086,6 +1086,11 @@ export class FilerController implements vscode.Disposable {
       --filer-mark-color: var(--vscode-editorWarning-foreground, #cca700);
       --filer-dir-color: var(--vscode-textLink-foreground, #4fc1ff);
       --filer-link-color: var(--vscode-charts-purple, #c586c0);
+      --filer-broken-link-color: var(--vscode-errorForeground, #f48771);
+      --filer-exec-color: var(--vscode-terminal-ansiGreen, #73c991);
+      --filer-archive-color: var(--vscode-charts-orange, #d18616);
+      --filer-readonly-color: var(--vscode-charts-yellow, #cca700);
+      --filer-hidden-color: var(--vscode-descriptionForeground, #8c8c8c);
     }
 
     * {
@@ -1206,6 +1211,23 @@ export class FilerController implements vscode.Disposable {
       text-overflow: ellipsis;
     }
 
+    .entry-name.is-hidden {
+      color: var(--filer-hidden-color);
+      opacity: 0.75;
+    }
+
+    .entry-name.is-readonly {
+      color: var(--filer-readonly-color);
+    }
+
+    .entry-name.is-archive {
+      color: var(--filer-archive-color);
+    }
+
+    .entry-name.is-exec {
+      color: var(--filer-exec-color);
+    }
+
     .entry-name.is-dir {
       color: var(--filer-dir-color);
       font-weight: 600;
@@ -1215,9 +1237,13 @@ export class FilerController implements vscode.Disposable {
       color: var(--filer-link-color);
     }
 
-    .entry-row.cursor.pane-active .entry-name.is-dir,
-    .entry-row.cursor.pane-active .entry-name.is-link {
+    .entry-name.is-broken-link {
+      color: var(--filer-broken-link-color);
+    }
+
+    .entry-row.cursor.pane-active .entry-name {
       color: var(--filer-cursor-fg);
+      opacity: 1;
     }
 
     .entry-size {
