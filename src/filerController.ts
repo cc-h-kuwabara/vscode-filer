@@ -775,10 +775,10 @@ export class FilerController implements vscode.Disposable {
       return;
     }
 
-    const bdfExt = vscode.extensions.getExtension('bdf.bdf-preview');
+    const bdfExt = vscode.extensions.getExtension('epsilonsoft.bdf-preview');
     if (!bdfExt) {
       const msg =
-        'Extension "BDF Document Preview for Visual Studio Code" (bdf.bdf-preview) is not installed.';
+        'Extension "BDF Document Preview for Visual Studio Code" (epsilonsoft.bdf-preview) is not installed.';
       this.logger.warn(msg);
       void vscode.window.showWarningMessage(msg);
       return;
