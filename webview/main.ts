@@ -404,10 +404,18 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-  const pane0Header = document.querySelector('#pane-0 .pane-header');
-  const pane1Header = document.querySelector('#pane-1 .pane-header');
-  pane0Header?.addEventListener('click', () => vscode.postMessage({ type: 'selectPane', paneId: 0 as PaneId }));
-  pane1Header?.addEventListener('click', () => vscode.postMessage({ type: 'selectPane', paneId: 1 as PaneId }));
+  ([0, 1] as PaneId[]).forEach((paneId) => {
+    const paneEl = document.getElementById(`pane-${paneId}`);
+    paneEl?.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement | null)?.closest('.entry-row')) {
+        return;
+      }
+      if (currentState?.activePane !== paneId) {
+        vscode.postMessage({ type: 'selectPane', paneId });
+      }
+      (document.querySelector('.root') as HTMLElement | null)?.focus();
+    });
+  });
 
   const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
   searchInput?.addEventListener('input', () => {

@@ -512,9 +512,12 @@ export class FilerController implements vscode.Disposable {
             placeHolder: 'new_folder',
           });
           if (name) {
-            await this.fileOps.makeDirectory(activePane.cwd, name);
-            await this.paneManager.reloadPane(activeId, name.split('/')[0]);
-            this.syncState();
+            const created = await this.fileOps.makeDirectory(activePane.cwd, name);
+            if (created) {
+              const targetDir = path.resolve(activePane.cwd, name.trim());
+              await this.paneManager.cd(activeId, targetDir);
+              this.syncState();
+            }
           }
           return;
         }
