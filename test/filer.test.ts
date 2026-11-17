@@ -10,7 +10,7 @@ import {
   parseWslListOutput,
   parseWslUncPath,
 } from '../src/core/driveDetector';
-import { FileOperations } from '../src/core/fileOperations';
+import { FileOperations, formatOverwriteDetail } from '../src/core/fileOperations';
 import { DEFAULT_KEYBINDINGS, mergeKeybindings } from '../src/core/keybindings';
 import { OperationLogger } from '../src/core/logger';
 import { isExecutableFile, isReadOnlyMode, PaneManager } from '../src/core/paneManager';
@@ -316,6 +316,180 @@ describe('VS Code Filer Core', () => {
 
     // Cleanup read-only bit so afterEach fs.rm succeeds cleanly on Windows
     await fs.chmod(roPath, 0o666);
+  });
+
+  it('passes source and target paths to confirmOverwrite and formats dates and sizes', async () => {
+    const srcFile = path.join(leftDir, 'dup.txt');
+    const dstFile = path.join(rightDir, 'dup.txt');
+    await fs.writeFile(srcFile, 'new content 12345');
+    await fs.writeFile(dstFile, 'old');
+
+    const detail = await formatOverwriteDetail(dstFile, srcFile);
+    expect(detail).toContain('Source (New):');
+    expect(detail).toContain('Existing (Target):');
+    expect(detail).toContain('17 B');
+    expect(detail).toContain('3 B');
+    expect(detail).toContain(srcFile);
+    expect(detail).toContain(dstFile);
+
+    const logger = new OperationLogger();
+    let capturedTarget: string | undefined;
+    let capturedSource: string | undefined;
+    const ops = new FileOperations(logger, {
+      confirmOverwrite: async (targetPath, sourcePath) => {
+        capturedTarget = targetPath;
+        capturedSource = sourcePath;
+        return 'skip';
+      },
+    });
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+    const entry = pm.getPane(0).entries.find((e) => e.name === 'dup.txt')!;
+
+    const copied = await ops.copyEntries([entry], rightDir);
+    expect(copied).toBe(0);
+    expect(capturedTarget).toBe(dstFile);
+    expect(capturedSource).toBe(srcFile);
+    expect(await fs.readFile(dstFile, 'utf8')).toBe('old');
+  });
+
+  it('merges directories without directory overwrite prompt and confirms only per file', async () => {
+    const srcSub = path.join(leftDir, 'subA');
+    const dstSub = path.join(rightDir, 'subA');
+    await fs.mkdir(dstSub, { recursive: true });
+
+    await fs.writeFile(path.join(srcSub, 'dup.txt'), 'src dup');
+    await fs.writeFile(path.join(srcSub, 'only_src.txt'), 'new file');
+    await fs.writeFile(path.join(dstSub, 'dup.txt'), 'dst dup');
+    await fs.writeFile(path.join(dstSub, 'only_dst.txt'), 'existing file');
+
+    const prompts: Array<{ target: string; source?: string }> = [];
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger, {
+      confirmOverwrite: async (targetPath, sourcePath) => {
+        prompts.push({ target: targetPath, source: sourcePath });
+        return 'skip'; // Skip overwriting dup.txt
+      },
+    });
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+    const subEntry = pm.getPane(0).entries.find((e) => e.name === 'subA')!;
+
+    await ops.copyEntries([subEntry], rightDir);
+
+    expect(prompts).toEqual([
+      {
+        target: path.join(dstSub, 'dup.txt'),
+        source: path.join(srcSub, 'dup.txt'),
+      },
+    ]);
+    expect(await fs.readFile(path.join(dstSub, 'dup.txt'), 'utf8')).toBe('dst dup');
+    expect(await fs.readFile(path.join(dstSub, 'only_src.txt'), 'utf8')).toBe('new file');
+    expect(await fs.readFile(path.join(dstSub, 'only_dst.txt'), 'utf8')).toBe('existing file');
+  });
+
+  it('aborts all remaining copies when confirmOverwrite returns cancel', async () => {
+    const f1Src = path.join(leftDir, 'a_dup.txt');
+    const f2Src = path.join(leftDir, 'b_new.txt');
+    const f1Dst = path.join(rightDir, 'a_dup.txt');
+    const f2Dst = path.join(rightDir, 'b_new.txt');
+
+    await fs.writeFile(f1Src, 'src 1');
+    await fs.writeFile(f2Src, 'src 2');
+    await fs.writeFile(f1Dst, 'dst 1');
+
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger, {
+      confirmOverwrite: async () => 'cancel',
+    });
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+    const e1 = pm.getPane(0).entries.find((e) => e.name === 'a_dup.txt')!;
+    const e2 = pm.getPane(0).entries.find((e) => e.name === 'b_new.txt')!;
+
+    const copied = await ops.copyEntries([e1, e2], rightDir);
+    expect(copied).toBe(0);
+    expect(await fs.readFile(f1Dst, 'utf8')).toBe('dst 1');
+    await expect(fs.stat(f2Dst)).rejects.toThrow();
+  });
+
+  it('logs COPY for overwritten files inside directory copies', async () => {
+    const srcSub = path.join(leftDir, 'subA');
+    const dstSub = path.join(rightDir, 'subA');
+    await fs.mkdir(dstSub, { recursive: true });
+    const srcDup = path.join(srcSub, 'dup.txt');
+    const dstDup = path.join(dstSub, 'dup.txt');
+    await fs.writeFile(srcDup, 'new content');
+    await fs.writeFile(dstDup, 'old content');
+
+    const logger = new OperationLogger();
+    const ops = new FileOperations(logger, {
+      confirmOverwrite: async () => 'overwrite',
+    });
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+    const subEntry = pm.getPane(0).entries.find((e) => e.name === 'subA')!;
+
+    await ops.copyEntries([subEntry], rightDir);
+
+    const logs = logger.getLogs().map((l) => l.message);
+    expect(logs).toContain(`COPY: ${srcDup} -> ${dstDup}`);
+    expect(await fs.readFile(dstDup, 'utf8')).toBe('new content');
+  });
+
+  it('applies overwriteAll and skipAll to subsequent conflicts without re-prompting', async () => {
+    const f1Src = path.join(leftDir, 'c1.txt');
+    const f2Src = path.join(leftDir, 'c2.txt');
+    const f3Src = path.join(leftDir, 'c3_new.txt');
+    const f1Dst = path.join(rightDir, 'c1.txt');
+    const f2Dst = path.join(rightDir, 'c2.txt');
+    const f3Dst = path.join(rightDir, 'c3_new.txt');
+
+    await fs.writeFile(f1Src, 'new1');
+    await fs.writeFile(f2Src, 'new2');
+    await fs.writeFile(f3Src, 'new3');
+    await fs.writeFile(f1Dst, 'old1');
+    await fs.writeFile(f2Dst, 'old2');
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+    const entries = ['c1.txt', 'c2.txt', 'c3_new.txt'].map(
+      (name) => pm.getPane(0).entries.find((e) => e.name === name)!
+    );
+
+    // Test skipAll
+    let skipPromptCount = 0;
+    const skipOps = new FileOperations(new OperationLogger(), {
+      confirmOverwrite: async () => {
+        skipPromptCount++;
+        return 'skipAll';
+      },
+    });
+    const skippedCopied = await skipOps.copyEntries(entries, rightDir);
+    expect(skipPromptCount).toBe(1);
+    expect(skippedCopied).toBe(1); // Only c3_new.txt
+    expect(await fs.readFile(f1Dst, 'utf8')).toBe('old1');
+    expect(await fs.readFile(f2Dst, 'utf8')).toBe('old2');
+    expect(await fs.readFile(f3Dst, 'utf8')).toBe('new3');
+
+    // Test overwriteAll
+    let overwritePromptCount = 0;
+    const overwriteOps = new FileOperations(new OperationLogger(), {
+      confirmOverwrite: async () => {
+        overwritePromptCount++;
+        return 'overwriteAll';
+      },
+    });
+    const overwriteCopied = await overwriteOps.copyEntries(entries, rightDir);
+    expect(overwritePromptCount).toBe(1);
+    expect(overwriteCopied).toBe(3);
+    expect(await fs.readFile(f1Dst, 'utf8')).toBe('new1');
+    expect(await fs.readFile(f2Dst, 'utf8')).toBe('new2');
+    expect(await fs.readFile(f3Dst, 'utf8')).toBe('new3');
   });
 });
 

@@ -4,6 +4,9 @@ import type {
   FilerStatePayload,
   KeybindingsMap,
   LogEntry,
+  OverwriteDecision,
+  OverwriteFileInfo,
+  OverwritePromptPayload,
   PaneId,
   PaneState,
   WebviewToExtensionMessage,
@@ -19,6 +22,20 @@ let currentState: FilerStatePayload | null = null;
 let keyLookup = new Map<string, string>();
 let isHelpOpen = false;
 let isSearchActive = false;
+let activeOverwritePromptId: string | null = null;
+let focusedOverwriteBtnIdx = 0;
+const OVERWRITE_BTN_IDS = [
+  'overwrite-btn-overwrite',
+  'overwrite-btn-skip',
+  'overwrite-btn-cancel',
+] as const;
+const OVERWRITE_DECISIONS: readonly OverwriteDecision[] = ['overwrite', 'skip', 'cancel'];
+
+function focusOverwriteButton(index: number): void {
+  focusedOverwriteBtnIdx = ((index % OVERWRITE_BTN_IDS.length) + OVERWRITE_BTN_IDS.length) % OVERWRITE_BTN_IDS.length;
+  const btn = document.getElementById(OVERWRITE_BTN_IDS[focusedOverwriteBtnIdx]) as HTMLButtonElement | null;
+  btn?.focus();
+}
 
 const ACTION_LABELS: Record<string, string> = {
   cursorUp: 'Cursor Up',
@@ -316,6 +333,53 @@ function renderHelp(keybindings: KeybindingsMap): void {
   }
 }
 
+function formatEntryMode(entry: FileEntry): string {
+  const typeChar = entry.isSymlink ? 'l' : entry.isDirectory ? 'd' : '-';
+  const m = entry.mode & 0o777;
+  const perms = [
+    m & 0o400 ? 'r' : '-',
+    m & 0o200 ? 'w' : '-',
+    m & 0o100 ? 'x' : '-',
+    m & 0o040 ? 'r' : '-',
+    m & 0o020 ? 'w' : '-',
+    m & 0o010 ? 'x' : '-',
+    m & 0o004 ? 'r' : '-',
+    m & 0o002 ? 'w' : '-',
+    m & 0o001 ? 'x' : '-',
+  ].join('');
+  const flags: string[] = [];
+  if (entry.isBrokenSymlink) {
+    flags.push('BROKEN');
+  }
+  if (entry.isReadOnly) {
+    flags.push('RO');
+  }
+  if (entry.isHidden) {
+    flags.push('H');
+  }
+  if (entry.isExecutable) {
+    flags.push('EXE');
+  }
+  return flags.length > 0 ? `${typeChar}${perms} [${flags.join(',')}]` : `${typeChar}${perms}`;
+}
+
+function formatCursorMeta(entry: FileEntry | undefined): string {
+  if (!entry) {
+    return '';
+  }
+  if (entry.name === '..') {
+    return 'Parent Directory';
+  }
+  const modeText = formatEntryMode(entry);
+  const sizeText = entry.isDirectory
+    ? '<DIR>'
+    : entry.size >= 1024
+      ? `${formatSize(entry)} (${entry.size.toLocaleString('en-US')} B)`
+      : `${entry.size.toLocaleString('en-US')} B`;
+  const dateText = entry.mtimeMs ? formatOverwriteDate(entry.mtimeMs) : '-';
+  return `${modeText} | ${sizeText} | ${dateText}`;
+}
+
 function renderStatus(): void {
   if (!currentState) {
     return;
@@ -333,6 +397,18 @@ function renderStatus(): void {
   }
   if (rightStatus) {
     rightStatus.textContent = `Press ? for Help`;
+  }
+
+  const cursorPathEl = document.getElementById('cursor-path-value');
+  if (cursorPathEl) {
+    const fullPath = cursorEntry ? cursorEntry.path : active.cwd;
+    cursorPathEl.textContent = fullPath;
+    cursorPathEl.title = fullPath;
+  }
+
+  const cursorMetaEl = document.getElementById('cursor-path-meta');
+  if (cursorMetaEl) {
+    cursorMetaEl.textContent = formatCursorMeta(cursorEntry);
   }
 }
 
@@ -399,6 +475,101 @@ function toggleHelp(force?: boolean): void {
   overlay.classList.toggle('open', isHelpOpen);
 }
 
+function formatOverwriteDate(mtimeMs: number): string {
+  if (!mtimeMs) {
+    return 'unknown';
+  }
+  const d = new Date(mtimeMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatOverwriteSize(info: OverwriteFileInfo): string {
+  if (!info.available) {
+    return '(unavailable)';
+  }
+  if (info.isDirectory) {
+    return '<DIR>';
+  }
+  const exact = `${info.size.toLocaleString('en-US')} B`;
+  if (info.size < 1024) {
+    return exact;
+  }
+  if (info.size < 1024 * 1024) {
+    return `${(info.size / 1024).toFixed(1)} KB (${exact})`;
+  }
+  if (info.size < 1024 * 1024 * 1024) {
+    return `${(info.size / (1024 * 1024)).toFixed(1)} MB (${exact})`;
+  }
+  return `${(info.size / (1024 * 1024 * 1024)).toFixed(1)} GB (${exact})`;
+}
+
+function fillOverwriteCard(prefix: 'source' | 'target', info: OverwriteFileInfo | undefined, badgeText: string | null): void {
+  const dateEl = document.getElementById(`overwrite-${prefix}-date`);
+  const sizeEl = document.getElementById(`overwrite-${prefix}-size`);
+  const pathEl = document.getElementById(`overwrite-${prefix}-path`);
+  const badgeEl = document.getElementById(`overwrite-${prefix}-badge`);
+
+  if (dateEl) {
+    dateEl.textContent = info?.available ? formatOverwriteDate(info.mtimeMs) : '-';
+  }
+  if (sizeEl) {
+    sizeEl.textContent = info ? formatOverwriteSize(info) : '-';
+  }
+  if (pathEl) {
+    pathEl.textContent = info?.path ?? '';
+  }
+  if (badgeEl) {
+    if (badgeText) {
+      badgeEl.textContent = badgeText;
+      badgeEl.className = 'overwrite-badge newer';
+      badgeEl.style.display = 'inline-block';
+    } else {
+      badgeEl.style.display = 'none';
+    }
+  }
+}
+
+function showOverwritePrompt(prompt: OverwritePromptPayload): void {
+  const overlay = document.getElementById('overwrite-overlay');
+  const titleEl = document.getElementById('overwrite-title');
+  if (!overlay || !titleEl) {
+    return;
+  }
+  activeOverwritePromptId = prompt.id;
+  titleEl.textContent = `Overwrite existing "${prompt.target.name}"?`;
+
+  let sourceBadge: string | null = null;
+  let targetBadge: string | null = null;
+  if (prompt.source?.available && prompt.target.available) {
+    if (prompt.source.mtimeMs > prompt.target.mtimeMs) {
+      sourceBadge = 'Newer';
+    } else if (prompt.target.mtimeMs > prompt.source.mtimeMs) {
+      targetBadge = 'Newer';
+    }
+  }
+
+  fillOverwriteCard('source', prompt.source, sourceBadge);
+  fillOverwriteCard('target', prompt.target, targetBadge);
+  overlay.classList.add('open');
+  window.focus();
+  focusedOverwriteBtnIdx = 0;
+  requestAnimationFrame(() => {
+    focusOverwriteButton(0);
+  });
+}
+
+function resolveOverwritePrompt(decision: OverwriteDecision): void {
+  const id = activeOverwritePromptId;
+  if (!id) {
+    return;
+  }
+  activeOverwritePromptId = null;
+  document.getElementById('overwrite-overlay')?.classList.remove('open');
+  vscode.postMessage({ type: 'overwriteResult', id, decision });
+  (document.querySelector('.root') as HTMLElement | null)?.focus();
+}
+
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
   const msg = event.data;
   switch (msg.type) {
@@ -417,6 +588,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
     }
     case 'help':
       toggleHelp(msg.open);
+      break;
+    case 'overwritePrompt':
+      showOverwritePrompt(msg.prompt);
       break;
     case 'focus':
       window.focus();
@@ -459,7 +633,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  window.addEventListener('keydown', (e) => {
+  document.getElementById('overwrite-btn-overwrite')?.addEventListener('click', (e) => {
+    resolveOverwritePrompt((e as MouseEvent).shiftKey ? 'overwriteAll' : 'overwrite');
+  });
+  document.getElementById('overwrite-btn-skip')?.addEventListener('click', (e) => {
+    resolveOverwritePrompt((e as MouseEvent).shiftKey ? 'skipAll' : 'skip');
+  });
+  document.getElementById('overwrite-btn-cancel')?.addEventListener('click', () => {
+    resolveOverwritePrompt('cancel');
+  });
+
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (activeOverwritePromptId) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          resolveOverwritePrompt('cancel');
+        } else if (e.key === 'o' || e.key === 'O') {
+          resolveOverwritePrompt(e.shiftKey ? 'overwriteAll' : 'overwrite');
+        } else if (e.key === 's' || e.key === 'S') {
+          resolveOverwritePrompt(e.shiftKey ? 'skipAll' : 'skip');
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          focusOverwriteButton(focusedOverwriteBtnIdx - 1);
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          focusOverwriteButton(focusedOverwriteBtnIdx + 1);
+        } else if (e.key === 'Tab') {
+          focusOverwriteButton(focusedOverwriteBtnIdx + (e.shiftKey ? -1 : 1));
+        } else if (e.key === 'Enter' || e.key === ' ') {
+          const baseDecision = OVERWRITE_DECISIONS[focusedOverwriteBtnIdx] ?? 'overwrite';
+          if (e.shiftKey && baseDecision === 'overwrite') {
+            resolveOverwritePrompt('overwriteAll');
+          } else if (e.shiftKey && baseDecision === 'skip') {
+            resolveOverwritePrompt('skipAll');
+          } else {
+            resolveOverwritePrompt(baseDecision);
+          }
+        }
+        return;
+      }
+
     if (isSearchActive) {
       return;
     }
@@ -491,7 +705,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     vscode.postMessage({ type: 'action', action });
-  });
+  },
+    true
+  );
 
   vscode.postMessage({ type: 'ready' });
 });

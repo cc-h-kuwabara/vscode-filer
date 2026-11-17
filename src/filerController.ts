@@ -14,7 +14,12 @@ import {
   normalizeInputPath,
   parseWslUncPath,
 } from './core/driveDetector';
-import { FileOperations } from './core/fileOperations';
+import {
+  FileOperations,
+  formatOverwriteDetail,
+  getOverwriteFileInfo,
+  OverwriteDecision,
+} from './core/fileOperations';
 import { mergeKeybindings } from './core/keybindings';
 import { OperationLogger } from './core/logger';
 import { PaneManager } from './core/paneManager';
@@ -47,6 +52,8 @@ export class FilerController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private suppressFocusUntil = 0;
   private lastSavedDirs: SavedPaneDirs | undefined;
+  private readonly pendingOverwriteResolvers = new Map<string, (decision: OverwriteDecision) => void>();
+  private overwritePromptSeq = 0;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('vscodeFiler');
@@ -66,11 +73,28 @@ export class FilerController implements vscode.Disposable {
     this.paneManager = new PaneManager(leftDir, rightDir, showDotFiles);
     this.logger = new OperationLogger(500);
     this.fileOps = new FileOperations(this.logger, {
-      confirmOverwrite: async (targetPath: string) => {
-        return this.confirmModal(
-          `Overwrite existing "${path.basename(targetPath)}"?`,
-          'Overwrite'
-        );
+      confirmOverwrite: async (targetPath: string, sourcePath?: string): Promise<OverwriteDecision> => {
+        if (this.panel) {
+          return this.promptOverwriteInWebview(targetPath, sourcePath);
+        }
+        const detail = await formatOverwriteDetail(targetPath, sourcePath);
+        try {
+          const answer = await vscode.window.showWarningMessage(
+            `Overwrite existing "${path.basename(targetPath)}"?`,
+            { modal: true, detail },
+            'Overwrite',
+            'Skip'
+          );
+          if (answer === 'Overwrite') {
+            return 'overwrite';
+          }
+          if (answer === 'Skip') {
+            return 'skip';
+          }
+          return 'cancel';
+        } finally {
+          this.restoreFocus();
+        }
       },
       moveToTrash: async (targetPath: string) => {
         await vscode.workspace.fs.delete(vscode.Uri.file(targetPath), {
@@ -119,6 +143,7 @@ export class FilerController implements vscode.Disposable {
 
     this.panel.onDidDispose(
       () => {
+        this.cancelPendingOverwrites();
         this.persistPaneDirs();
         this.panel = undefined;
       },
@@ -201,11 +226,15 @@ export class FilerController implements vscode.Disposable {
     }, 50);
   }
 
-  private async confirmModal(message: string, confirmLabel: string): Promise<boolean> {
+  private async confirmModal(
+    message: string,
+    confirmLabel: string,
+    detail?: string
+  ): Promise<boolean> {
     try {
       const answer = await vscode.window.showWarningMessage(
         message,
-        { modal: true },
+        { modal: true, detail },
         confirmLabel
       );
       return answer === confirmLabel;
@@ -275,7 +304,44 @@ export class FilerController implements vscode.Disposable {
       case 'promptResult':
         await this.handlePromptResult(msg.action, msg.value);
         return;
+
+      case 'overwriteResult': {
+        const resolver = this.pendingOverwriteResolvers.get(msg.id);
+        if (resolver) {
+          this.pendingOverwriteResolvers.delete(msg.id);
+          resolver(msg.decision);
+        }
+        return;
+      }
     }
+  }
+
+  private async promptOverwriteInWebview(
+    targetPath: string,
+    sourcePath?: string
+  ): Promise<OverwriteDecision> {
+    if (!this.panel) {
+      return 'cancel';
+    }
+    const [target, source] = await Promise.all([
+      getOverwriteFileInfo(targetPath),
+      sourcePath ? getOverwriteFileInfo(sourcePath) : Promise.resolve(undefined),
+    ]);
+    const id = `ow-${++this.overwritePromptSeq}`;
+    return new Promise<OverwriteDecision>((resolve) => {
+      this.pendingOverwriteResolvers.set(id, resolve);
+      this.postMessage({
+        type: 'overwritePrompt',
+        prompt: { id, target, source },
+      });
+    });
+  }
+
+  private cancelPendingOverwrites(): void {
+    for (const resolve of this.pendingOverwriteResolvers.values()) {
+      resolve('cancel');
+    }
+    this.pendingOverwriteResolvers.clear();
   }
 
   private async handleAction(action: string, args?: Record<string, unknown>): Promise<void> {
@@ -436,6 +502,21 @@ export class FilerController implements vscode.Disposable {
         case 'move': {
           const targets = this.paneManager.getTargetEntries(activeId);
           if (targets.length === 0) {
+            return;
+          }
+          const summary =
+            targets.length === 1
+              ? `Move "${targets[0].name}" to "${otherPane.cwd}"?`
+              : `Move ${targets.length} item(s) to "${otherPane.cwd}"?`;
+          const detail =
+            targets.length > 1
+              ? targets
+                  .slice(0, 10)
+                  .map((t) => t.name)
+                  .join('\n') + (targets.length > 10 ? `\n... and ${targets.length - 10} more` : '')
+              : undefined;
+          const ok = await this.confirmModal(summary, 'Move', detail);
+          if (!ok) {
             return;
           }
           await this.fileOps.moveEntries(targets, otherPane.cwd);
@@ -1258,6 +1339,40 @@ export class FilerController implements vscode.Disposable {
       font-size: 11px;
     }
 
+    .cursor-path-bar {
+      margin: 0 4px 4px 4px;
+      padding: 3px 8px;
+      border: 1px solid var(--filer-border);
+      background: var(--filer-header-bg);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+
+    .cursor-path-label {
+      font-weight: bold;
+      opacity: 0.75;
+      flex: 0 0 auto;
+    }
+
+    .cursor-path-value {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: text;
+      flex: 1 1 auto;
+    }
+
+    .cursor-path-meta {
+      flex: 0 0 auto;
+      opacity: 0.85;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+
     .log-pane {
       height: 160px;
       min-height: 90px;
@@ -1368,6 +1483,154 @@ export class FilerController implements vscode.Disposable {
       color: var(--filer-dir-color);
       font-weight: bold;
     }
+
+    .overwrite-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .overwrite-backdrop.open {
+      display: flex;
+    }
+
+    .overwrite-dialog {
+      width: min(760px, 100%);
+      background: var(--vscode-editorWidget-background, #252526);
+      border: 1px solid var(--filer-active-border);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px 16px;
+    }
+
+    .overwrite-title {
+      font-size: 14px;
+      font-weight: bold;
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      word-break: break-all;
+    }
+
+    .overwrite-compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .overwrite-card {
+      border: 1px solid var(--filer-border);
+      background: var(--filer-bg);
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .overwrite-card-title {
+      font-weight: bold;
+      font-size: 12px;
+      color: var(--filer-dir-color);
+      border-bottom: 1px solid var(--filer-border);
+      padding-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .overwrite-badge {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--vscode-badge-background, #4d4d4d);
+      color: var(--vscode-badge-foreground, #ffffff);
+      font-weight: bold;
+    }
+
+    .overwrite-badge.newer {
+      background: var(--vscode-testing-iconPassed, #388a34);
+      color: #ffffff;
+    }
+
+    .overwrite-row {
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      gap: 8px;
+      font-size: 12px;
+      align-items: baseline;
+    }
+
+    .overwrite-label {
+      opacity: 0.75;
+      font-size: 11px;
+    }
+
+    .overwrite-value {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-weight: 600;
+      word-break: break-all;
+    }
+
+    .overwrite-path {
+      font-size: 11px;
+      opacity: 0.8;
+      word-break: break-all;
+      margin-top: 2px;
+    }
+
+    .overwrite-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .overwrite-hint {
+      font-size: 11px;
+      opacity: 0.75;
+    }
+
+    .overwrite-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .overwrite-btn {
+      padding: 5px 14px;
+      font-family: inherit;
+      font-size: 12px;
+      border: 1px solid var(--filer-border);
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ffffff);
+      cursor: pointer;
+    }
+
+    .overwrite-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #45494e);
+    }
+
+    .overwrite-btn:focus,
+    .overwrite-btn:focus-visible {
+      outline: 2px solid var(--filer-active-border);
+      outline-offset: 2px;
+    }
+
+    .overwrite-btn.primary {
+      background: var(--vscode-button-background, #0e639c);
+      color: var(--vscode-button-foreground, #ffffff);
+      border-color: var(--vscode-button-background, #0e639c);
+    }
+
+    .overwrite-btn.primary:hover {
+      background: var(--vscode-button-hoverBackground, #1177bb);
+    }
   </style>
 </head>
 <body>
@@ -1387,6 +1650,12 @@ export class FilerController implements vscode.Disposable {
         </div>
         <div class="pane-list" id="pane-1-list"></div>
       </div>
+    </div>
+
+    <div class="cursor-path-bar" id="cursor-path-bar">
+      <span class="cursor-path-label">Path:</span>
+      <span class="cursor-path-value" id="cursor-path-value"></span>
+      <span class="cursor-path-meta" id="cursor-path-meta"></span>
     </div>
 
     <div class="log-pane">
@@ -1414,6 +1683,52 @@ export class FilerController implements vscode.Disposable {
       <span>Press Esc or ? to close</span>
     </div>
     <div class="help-grid" id="help-grid"></div>
+  </div>
+
+  <div class="overwrite-backdrop" id="overwrite-overlay" tabindex="-1">
+    <div class="overwrite-dialog">
+      <div class="overwrite-title" id="overwrite-title">Overwrite existing file?</div>
+      <div class="overwrite-compare">
+        <div class="overwrite-card" id="overwrite-source-card">
+          <div class="overwrite-card-title">
+            <span>Source (New)</span>
+            <span class="overwrite-badge" id="overwrite-source-badge" style="display:none"></span>
+          </div>
+          <div class="overwrite-row">
+            <span class="overwrite-label">Date</span>
+            <span class="overwrite-value" id="overwrite-source-date">-</span>
+          </div>
+          <div class="overwrite-row">
+            <span class="overwrite-label">Size</span>
+            <span class="overwrite-value" id="overwrite-source-size">-</span>
+          </div>
+          <div class="overwrite-path" id="overwrite-source-path"></div>
+        </div>
+        <div class="overwrite-card" id="overwrite-target-card">
+          <div class="overwrite-card-title">
+            <span>Existing (Target)</span>
+            <span class="overwrite-badge" id="overwrite-target-badge" style="display:none"></span>
+          </div>
+          <div class="overwrite-row">
+            <span class="overwrite-label">Date</span>
+            <span class="overwrite-value" id="overwrite-target-date">-</span>
+          </div>
+          <div class="overwrite-row">
+            <span class="overwrite-label">Size</span>
+            <span class="overwrite-value" id="overwrite-target-size">-</span>
+          </div>
+          <div class="overwrite-path" id="overwrite-target-path"></div>
+        </div>
+      </div>
+      <div class="overwrite-actions">
+        <span class="overwrite-hint">Hold Shift for All (Shift+O: Overwrite All, Shift+S: Skip All)</span>
+        <div class="overwrite-buttons">
+          <button class="overwrite-btn primary" id="overwrite-btn-overwrite" type="button">Overwrite (O)</button>
+          <button class="overwrite-btn" id="overwrite-btn-skip" type="button">Skip (S)</button>
+          <button class="overwrite-btn" id="overwrite-btn-cancel" type="button">Cancel (Esc)</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

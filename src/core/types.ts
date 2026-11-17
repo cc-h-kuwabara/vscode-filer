@@ -58,11 +58,29 @@ export interface FilerStatePayload {
   keybindings: KeybindingsMap;
 }
 
+export type OverwriteDecision = 'overwrite' | 'skip' | 'overwriteAll' | 'skipAll' | 'cancel';
+
+export interface OverwriteFileInfo {
+  path: string;
+  name: string;
+  size: number;
+  mtimeMs: number;
+  isDirectory: boolean;
+  available: boolean;
+}
+
+export interface OverwritePromptPayload {
+  id: string;
+  target: OverwriteFileInfo;
+  source?: OverwriteFileInfo;
+}
+
 export type ExtensionToWebviewMessage =
   | { type: 'state'; state: FilerStatePayload }
   | { type: 'log'; entry: LogEntry }
   | { type: 'clearLogs' }
   | { type: 'prompt'; promptType: PromptRequest }
+  | { type: 'overwritePrompt'; prompt: OverwritePromptPayload }
   | { type: 'help'; open: boolean }
   | { type: 'focus' };
 
@@ -80,5 +98,6 @@ export type WebviewToExtensionMessage =
   | { type: 'action'; action: string; args?: Record<string, unknown> }
   | { type: 'selectPane'; paneId: PaneId }
   | { type: 'selectEntry'; paneId: PaneId; index: number; open?: boolean }
-  | { type: 'promptResult'; id: string; action: string; value: string | null };
+  | { type: 'promptResult'; id: string; action: string; value: string | null }
+  | { type: 'overwriteResult'; id: string; decision: OverwriteDecision };
 
