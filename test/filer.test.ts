@@ -491,5 +491,48 @@ describe('VS Code Filer Core', () => {
     expect(await fs.readFile(f2Dst, 'utf8')).toBe('new2');
     expect(await fs.readFile(f3Dst, 'utf8')).toBe('new3');
   });
+
+  it('marks files in active pane that share the same name as files in the other pane', async () => {
+    await fs.writeFile(path.join(leftDir, 'same1.txt'), 'l1');
+    await fs.writeFile(path.join(leftDir, 'same2.txt'), 'l2');
+    await fs.writeFile(path.join(leftDir, 'leftOnly.txt'), 'l3');
+    await fs.mkdir(path.join(leftDir, 'sharedDir'), { recursive: true });
+
+    await fs.writeFile(path.join(rightDir, 'same1.txt'), 'r1');
+    await fs.writeFile(path.join(rightDir, 'same2.txt'), 'r2');
+    await fs.writeFile(path.join(rightDir, 'rightOnly.txt'), 'r3');
+    await fs.mkdir(path.join(rightDir, 'sharedDir'), { recursive: true });
+
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+
+    const count = pm.markSameNameFiles(0);
+    expect(count).toBe(2);
+
+    const leftEntries = pm.getPane(0).entries;
+    expect(leftEntries.find((e) => e.name === 'same1.txt')?.marked).toBe(true);
+    expect(leftEntries.find((e) => e.name === 'same2.txt')?.marked).toBe(true);
+    expect(leftEntries.find((e) => e.name === 'leftOnly.txt')?.marked).toBe(false);
+    expect(leftEntries.find((e) => e.name === 'sharedDir')?.marked).toBe(false);
+  });
+
+  it('marks all non-directory files and clears all marks', async () => {
+    const pm = new PaneManager(leftDir, rightDir, false);
+    await pm.reloadAll();
+
+    // Mark a directory first to verify clearAllMarks clears directories too
+    const subA = pm.getPane(0).entries.find((e) => e.name === 'subA')!;
+    subA.marked = true;
+
+    const markedCount = pm.markAllFiles(0);
+    expect(markedCount).toBe(2); // alpha.ts, beta.js
+    expect(pm.getPane(0).entries.find((e) => e.name === 'alpha.ts')?.marked).toBe(true);
+    expect(pm.getPane(0).entries.find((e) => e.name === 'beta.js')?.marked).toBe(true);
+    expect(pm.getPane(0).entries.find((e) => e.name === '..')?.marked).toBe(false);
+
+    const clearedCount = pm.clearAllMarks(0);
+    expect(clearedCount).toBe(3); // subA + alpha.ts + beta.txt
+    expect(pm.getPane(0).entries.every((e) => !e.marked)).toBe(true);
+  });
 });
 

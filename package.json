@@ -106,18 +106,25 @@
               "]"
             ],
             "invertFileMarks": [
-              "Home",
               "alt+a"
             ],
             "invertAllMarks": [
-              "End",
               "alt+e"
+            ],
+            "markAllFiles": [
+              "Home"
+            ],
+            "clearAllMarks": [
+              "End"
             ],
             "globMark": [
               "*"
             ],
             "regexMark": [
               "+"
+            ],
+            "markSameNameFiles": [
+              "w"
             ],
             "toggleDotFiles": [
               "."
@@ -177,7 +184,7 @@
               "O"
             ],
             "swapPanes": [
-              "w"
+              "W"
             ],
             "incrementalSearch": [
               "/",

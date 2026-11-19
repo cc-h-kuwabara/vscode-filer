@@ -434,6 +434,18 @@ export class FilerController implements vscode.Disposable {
           this.paneManager.invertMarks(activeId, false);
           this.syncState();
           return;
+        case 'markAllFiles': {
+          const count = this.paneManager.markAllFiles(activeId);
+          this.logger.info(`Mark all files: ${count} file(s).`);
+          this.syncState();
+          return;
+        }
+        case 'clearAllMarks': {
+          const count = this.paneManager.clearAllMarks(activeId);
+          this.logger.info(`Clear all marks: ${count} item(s).`);
+          this.syncState();
+          return;
+        }
         case 'globMark': {
           const pattern = await this.promptInput({
             prompt: 'Glob pattern to mark (e.g. *.ts)',
@@ -460,6 +472,12 @@ export class FilerController implements vscode.Disposable {
               this.logger.error(`Invalid RegExp: ${String(err)}`);
             }
           }
+          return;
+        }
+        case 'markSameNameFiles': {
+          const count = this.paneManager.markSameNameFiles(activeId);
+          this.logger.info(`Mark same-name files: ${count} file(s).`);
+          this.syncState();
           return;
         }
         case 'toggleDotFiles': {

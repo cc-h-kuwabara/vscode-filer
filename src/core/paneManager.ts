@@ -423,6 +423,29 @@ export class PaneManager {
     }
   }
 
+  public markAllFiles(id: PaneId): number {
+    let count = 0;
+    for (const entry of this.panes[id].entries) {
+      if (entry.name === '..' || entry.isDirectory) {
+        continue;
+      }
+      entry.marked = true;
+      count++;
+    }
+    return count;
+  }
+
+  public clearAllMarks(id: PaneId): number {
+    let count = 0;
+    for (const entry of this.panes[id].entries) {
+      if (entry.marked) {
+        entry.marked = false;
+        count++;
+      }
+    }
+    return count;
+  }
+
   public markByGlob(id: PaneId, pattern: string): number {
     const regex = globToRegExp(pattern);
     let count = 0;
@@ -447,6 +470,27 @@ export class PaneManager {
       }
       if (regex.test(entry.name)) {
         entry.marked = !entry.marked;
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public markSameNameFiles(id: PaneId): number {
+    const activePane = this.panes[id];
+    const otherPane = this.panes[id === 0 ? 1 : 0];
+    const otherFileNames = new Set(
+      otherPane.entries
+        .filter((e) => e.name !== '..' && !e.isDirectory)
+        .map((e) => e.name)
+    );
+    let count = 0;
+    for (const entry of activePane.entries) {
+      if (entry.name === '..' || entry.isDirectory) {
+        continue;
+      }
+      if (otherFileNames.has(entry.name)) {
+        entry.marked = true;
         count++;
       }
     }
