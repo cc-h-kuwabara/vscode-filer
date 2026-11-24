@@ -37,6 +37,28 @@ import {
 const JUMP_BOOKMARKS_KEY = 'vscodeFiler.jumpBookmarks';
 const LAST_PANE_DIRS_KEY = 'vscodeFiler.lastPaneDirs';
 
+const LIGHTWEIGHT_ACTIONS = new Set([
+  'cursorUp',
+  'cursorDown',
+  'cursorTop',
+  'cursorBottom',
+  'pageUp',
+  'pageDown',
+  'paneLeft',
+  'paneRight',
+  'switchPane',
+  'toggleMark',
+  'rangeMarkStart',
+  'rangeMarkEnd',
+  'invertFileMarks',
+  'invertAllMarks',
+  'markAllFiles',
+  'clearAllMarks',
+  'markSameNameFiles',
+  'jumpToIndex',
+  'clearLog',
+]);
+
 interface SavedPaneDirs {
   left: string;
   right: string;
@@ -54,6 +76,7 @@ export class FilerController implements vscode.Disposable {
   private lastSavedDirs: SavedPaneDirs | undefined;
   private readonly pendingOverwriteResolvers = new Map<string, (decision: OverwriteDecision) => void>();
   private overwritePromptSeq = 0;
+  private isBusy = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('vscodeFiler');
@@ -275,44 +298,83 @@ export class FilerController implements vscode.Disposable {
     });
   }
 
+  private setBusy(busy: boolean, notifyWebview = true, message?: string): void {
+    this.isBusy = busy;
+    if (notifyWebview) {
+      this.postMessage({ type: 'busy', busy, message });
+    }
+  }
+
   private async handleMessage(msg: WebviewToExtensionMessage): Promise<void> {
-    switch (msg.type) {
-      case 'ready':
-        await this.paneManager.reloadAll();
-        this.syncState();
-        return;
-
-      case 'selectPane':
-        this.paneManager.setActivePane(msg.paneId);
-        this.syncState();
-        return;
-
-      case 'selectEntry':
-        this.paneManager.setActivePane(msg.paneId);
-        this.paneManager.setCursor(msg.paneId, msg.index);
-        if (msg.open) {
-          await this.handleEnter();
-        } else {
-          this.syncState();
-        }
-        return;
-
-      case 'action':
-        await this.handleAction(msg.action, msg.args);
-        return;
-
-      case 'promptResult':
-        await this.handlePromptResult(msg.action, msg.value);
-        return;
-
-      case 'overwriteResult': {
-        const resolver = this.pendingOverwriteResolvers.get(msg.id);
-        if (resolver) {
-          this.pendingOverwriteResolvers.delete(msg.id);
-          resolver(msg.decision);
-        }
-        return;
+    if (msg.type === 'overwriteResult') {
+      const resolver = this.pendingOverwriteResolvers.get(msg.id);
+      if (resolver) {
+        this.pendingOverwriteResolvers.delete(msg.id);
+        resolver(msg.decision);
       }
+      return;
+    }
+
+    if (this.isBusy) {
+      return;
+    }
+
+    if (msg.type === 'syncCursor') {
+      this.paneManager.setActivePane(msg.activePane);
+      this.paneManager.setCursor(0, msg.cursors[0]);
+      this.paneManager.setCursor(1, msg.cursors[1]);
+      return;
+    }
+
+    if (msg.type === 'syncToggleMark') {
+      const pane = this.paneManager.getPane(msg.paneId);
+      const entry = pane.entries[msg.index];
+      if (entry && entry.name !== '..') {
+        entry.marked = msg.marked;
+      }
+      this.paneManager.setCursor(msg.paneId, msg.nextCursor);
+      return;
+    }
+
+    const notifyWebview =
+      msg.type === 'ready' ||
+      (msg.type === 'selectEntry' && Boolean(msg.open)) ||
+      msg.type === 'promptResult' ||
+      (msg.type === 'action' && !LIGHTWEIGHT_ACTIONS.has(msg.action));
+
+    this.setBusy(true, notifyWebview, 'Working...');
+    try {
+      switch (msg.type) {
+        case 'ready':
+          await this.paneManager.reloadAll();
+          this.syncState();
+          return;
+
+        case 'selectPane':
+          this.paneManager.setActivePane(msg.paneId);
+          this.syncState();
+          return;
+
+        case 'selectEntry':
+          this.paneManager.setActivePane(msg.paneId);
+          this.paneManager.setCursor(msg.paneId, msg.index);
+          if (msg.open) {
+            await this.handleEnter();
+          } else {
+            this.syncState();
+          }
+          return;
+
+        case 'action':
+          await this.handleAction(msg.action, msg.args);
+          return;
+
+        case 'promptResult':
+          await this.handlePromptResult(msg.action, msg.value);
+          return;
+      }
+    } finally {
+      this.setBusy(false, notifyWebview);
     }
   }
 
@@ -396,6 +458,9 @@ export class FilerController implements vscode.Disposable {
           return;
         case 'openExternal':
           await this.handleOpenExternal();
+          return;
+        case 'openInVscode':
+          await this.handleOpenInVscode();
           return;
         case 'preview':
           await this.handlePreview();
@@ -821,6 +886,14 @@ export class FilerController implements vscode.Disposable {
       return;
     }
 
+    if (activePane.isVirtual && !activePane.virtualArchive && !entry.isDirectory) {
+      const targetDir = path.dirname(entry.path);
+      await this.paneManager.cd(activeId, targetDir, true, path.basename(entry.path));
+      this.logger.info(`OPEN DIR: ${targetDir}`);
+      this.syncState();
+      return;
+    }
+
     if (entry.isDirectory) {
       await this.paneManager.cd(activeId, entry.path);
       this.syncState();
@@ -837,6 +910,25 @@ export class FilerController implements vscode.Disposable {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.path));
     await vscode.window.showTextDocument(doc, { preview: false });
     this.logger.info(`OPEN: ${entry.path}`);
+  }
+
+  private async handleOpenInVscode(): Promise<void> {
+    const activeId = this.paneManager.getActivePaneId();
+    const activePane = this.paneManager.getPane(activeId);
+    const entry = this.paneManager.getCursorEntry(activeId);
+    if (!entry || entry.name === '..' || entry.isDirectory) {
+      return;
+    }
+
+    try {
+      const targetPath = await this.resolveEntryFilePath(activePane, entry);
+      const uri = vscode.Uri.file(targetPath);
+      await vscode.commands.executeCommand('vscode.open', uri, { preview: false });
+      this.logger.info(`OPEN: ${entry.path}`);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to open ${entry.name}: ${errMsg}`);
+    }
   }
 
   private async handleOpenExternal(): Promise<void> {
@@ -1215,6 +1307,15 @@ export class FilerController implements vscode.Disposable {
       height: 100vh;
       width: 100vw;
       outline: none;
+    }
+
+    .root.is-busy {
+      pointer-events: none;
+      cursor: progress;
+    }
+
+    .root.is-busy .dir-panes {
+      opacity: 0.7;
     }
 
     .dir-panes {

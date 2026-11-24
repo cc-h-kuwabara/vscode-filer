@@ -20,8 +20,12 @@ const vscode = acquireVsCodeApi();
 
 let currentState: FilerStatePayload | null = null;
 let keyLookup = new Map<string, string>();
+let lastKeybindingsJson = '';
+let lastLogSignature = '';
+const lastPaneContentSig: [string, string] = ['', ''];
 let isHelpOpen = false;
 let isSearchActive = false;
+let isBusy = false;
 let activeOverwritePromptId: string | null = null;
 let focusedOverwriteBtnIdx = 0;
 const OVERWRITE_BTN_IDS = [
@@ -48,6 +52,7 @@ const ACTION_LABELS: Record<string, string> = {
   pageUp: 'Page Up (10 lines)',
   pageDown: 'Page Down (10 lines)',
   enter: 'Open File / Enter Dir',
+  openInVscode: 'Open in VS Code',
   openExternal: 'Open with OS Default App',
   preview: 'BDF Document Preview',
   parentDir: 'Parent Directory',
@@ -197,6 +202,39 @@ function isArchiveName(name: string): boolean {
   return ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+function computeEntryKey(entry: FileEntry): string {
+  return `${entry.name}|${entry.size}|${entry.mtimeMs}|${entry.mode}|${entry.isDirectory ? 1 : 0}|${entry.isSymlink ? 1 : 0}|${entry.isBrokenSymlink ? 1 : 0}`;
+}
+
+function computePaneContentSig(pane: PaneState): string {
+  const len = pane.entries.length;
+  const first = len > 0 ? computeEntryKey(pane.entries[0]) : '';
+  const mid = len > 2 ? computeEntryKey(pane.entries[len >> 1]) : '';
+  const last = len > 1 ? computeEntryKey(pane.entries[len - 1]) : '';
+  return `${pane.cwd}|${pane.virtualLabel ?? ''}|${pane.sortField}:${pane.sortOrder}|${pane.mask}|${pane.showDotFiles ? 1 : 0}|${len}|${first}|${mid}|${last}`;
+}
+
+function updatePaneHeaderMeta(pane: PaneState): void {
+  const metaEl = document.getElementById(`pane-${pane.id}-meta`);
+  if (!metaEl) {
+    return;
+  }
+  let itemCount = 0;
+  let markedCount = 0;
+  for (let i = 0; i < pane.entries.length; i++) {
+    const e = pane.entries[i];
+    if (e.name !== '..') {
+      itemCount++;
+    }
+    if (e.marked) {
+      markedCount++;
+    }
+  }
+  const maskText = pane.mask ? ` | Mask: ${pane.mask}` : '';
+  const dotText = pane.showDotFiles ? '' : ' | NoDot';
+  metaEl.textContent = `${itemCount} items | Marks: ${markedCount} | ${pane.sortField}:${pane.sortOrder}${maskText}${dotText}`;
+}
+
 function renderPane(pane: PaneState, isActive: boolean): void {
   const paneEl = document.getElementById(`pane-${pane.id}`);
   const pathEl = document.getElementById(`pane-${pane.id}-path`);
@@ -210,17 +248,40 @@ function renderPane(pane: PaneState, isActive: boolean): void {
   pathEl.textContent = pane.isVirtual ? `${pane.virtualLabel} (${pane.cwd})` : pane.cwd;
   pathEl.title = pane.cwd;
 
-  const markedCount = pane.entries.filter((e) => e.marked).length;
-  const maskText = pane.mask ? ` | Mask: ${pane.mask}` : '';
-  const dotText = pane.showDotFiles ? '' : ' | NoDot';
-  metaEl.textContent = `${pane.entries.length} items | Marks: ${markedCount} | ${pane.sortField}:${pane.sortOrder}${maskText}${dotText}`;
+  updatePaneHeaderMeta(pane);
 
+  const contentSig = computePaneContentSig(pane);
+  if (contentSig === lastPaneContentSig[pane.id] && listEl.children.length === pane.entries.length) {
+    for (let idx = 0; idx < pane.entries.length; idx++) {
+      const entry = pane.entries[idx];
+      const row = listEl.children[idx] as HTMLElement;
+      row.classList.toggle('cursor', idx === pane.cursor);
+      row.classList.toggle('pane-active', isActive);
+      row.classList.toggle('marked', entry.marked);
+      const markSpan = row.firstElementChild as HTMLElement | null;
+      if (markSpan) {
+        const nextText = entry.marked ? '*' : '';
+        if (markSpan.textContent !== nextText) {
+          markSpan.textContent = nextText;
+        }
+      }
+    }
+    const cursorRow = listEl.children[pane.cursor] as HTMLElement | undefined;
+    if (cursorRow) {
+      cursorRow.scrollIntoView({ block: 'nearest' });
+    }
+    return;
+  }
+
+  lastPaneContentSig[pane.id] = contentSig;
   listEl.innerHTML = '';
   const fragment = document.createDocumentFragment();
 
-  pane.entries.forEach((entry, idx) => {
+  for (let idx = 0; idx < pane.entries.length; idx++) {
+    const entry = pane.entries[idx];
     const row = document.createElement('div');
     row.className = 'entry-row';
+    row.dataset.index = String(idx);
     if (idx === pane.cursor) {
       row.classList.add('cursor');
     }
@@ -275,15 +336,8 @@ function renderPane(pane: PaneState, isActive: boolean): void {
     row.appendChild(sizeSpan);
     row.appendChild(dateSpan);
 
-    row.addEventListener('click', () => {
-      vscode.postMessage({ type: 'selectEntry', paneId: pane.id, index: idx, open: false });
-    });
-    row.addEventListener('dblclick', () => {
-      vscode.postMessage({ type: 'selectEntry', paneId: pane.id, index: idx, open: true });
-    });
-
     fragment.appendChild(row);
-  });
+  }
 
   listEl.appendChild(fragment);
 
@@ -291,6 +345,14 @@ function renderPane(pane: PaneState, isActive: boolean): void {
   if (cursorRow) {
     cursorRow.scrollIntoView({ block: 'nearest' });
   }
+}
+
+function computeLogSignature(logs: LogEntry[]): string {
+  if (logs.length === 0) {
+    return '0';
+  }
+  const last = logs[logs.length - 1];
+  return `${logs.length}|${last.timestamp}|${last.message}`;
 }
 
 function appendLogElement(entry: LogEntry): void {
@@ -303,17 +365,32 @@ function appendLogElement(entry: LogEntry): void {
   line.textContent = `[${entry.timestamp}] ${entry.message}`;
   logList.appendChild(line);
   logList.scrollTop = logList.scrollHeight;
+  if (currentState) {
+    currentState.logs.push(entry);
+    lastLogSignature = computeLogSignature(currentState.logs);
+  }
 }
 
 function renderLogs(logs: LogEntry[]): void {
+  const sig = computeLogSignature(logs);
+  if (sig === lastLogSignature) {
+    return;
+  }
+  lastLogSignature = sig;
   const logList = document.getElementById('log-list');
   if (!logList) {
     return;
   }
   logList.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   for (const entry of logs) {
-    appendLogElement(entry);
+    const line = document.createElement('div');
+    line.className = `log-line ${entry.level}`;
+    line.textContent = `[${entry.timestamp}] ${entry.message}`;
+    fragment.appendChild(line);
   }
+  logList.appendChild(fragment);
+  logList.scrollTop = logList.scrollHeight;
 }
 
 function renderHelp(keybindings: KeybindingsMap): void {
@@ -415,13 +492,180 @@ function renderStatus(): void {
   }
 }
 
+function postSyncCursor(): void {
+  if (!currentState) {
+    return;
+  }
+  vscode.postMessage({
+    type: 'syncCursor',
+    activePane: currentState.activePane,
+    cursors: [currentState.panes[0].cursor, currentState.panes[1].cursor],
+  });
+}
+
+function setCursorLocally(paneId: PaneId, nextIndex: number): void {
+  if (!currentState) {
+    return;
+  }
+  const pane = currentState.panes[paneId];
+  const len = pane.entries.length;
+  const clamped = len === 0 ? 0 : Math.max(0, Math.min(len - 1, nextIndex));
+  const prevCursor = pane.cursor;
+  if (prevCursor === clamped) {
+    return;
+  }
+  pane.cursor = clamped;
+  const listEl = document.getElementById(`pane-${paneId}-list`);
+  if (listEl) {
+    listEl.children[prevCursor]?.classList.remove('cursor');
+    const nextRow = listEl.children[clamped] as HTMLElement | undefined;
+    if (nextRow) {
+      nextRow.classList.add('cursor');
+      nextRow.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  renderStatus();
+  postSyncCursor();
+}
+
+function setActivePaneLocally(nextPaneId: PaneId): void {
+  if (!currentState || currentState.activePane === nextPaneId) {
+    return;
+  }
+  const prevId = currentState.activePane;
+  currentState.activePane = nextPaneId;
+
+  document.getElementById(`pane-${prevId}`)?.classList.remove('active');
+  document.getElementById(`pane-${nextPaneId}`)?.classList.add('active');
+
+  const prevList = document.getElementById(`pane-${prevId}-list`);
+  const nextList = document.getElementById(`pane-${nextPaneId}-list`);
+  if (prevList) {
+    for (let i = 0; i < prevList.children.length; i++) {
+      prevList.children[i].classList.remove('pane-active');
+    }
+  }
+  if (nextList) {
+    for (let i = 0; i < nextList.children.length; i++) {
+      nextList.children[i].classList.add('pane-active');
+    }
+  }
+
+  renderStatus();
+  postSyncCursor();
+}
+
+function selectEntryLocally(paneId: PaneId, index: number): void {
+  if (!currentState) {
+    return;
+  }
+  if (currentState.activePane !== paneId) {
+    setActivePaneLocally(paneId);
+  }
+  setCursorLocally(paneId, index);
+}
+
+function toggleMarkAndMoveDownLocally(): void {
+  if (!currentState) {
+    return;
+  }
+  const activeId = currentState.activePane;
+  const pane = currentState.panes[activeId];
+  const idx = pane.cursor;
+  const entry = pane.entries[idx];
+  if (!entry) {
+    return;
+  }
+  if (entry.name !== '..') {
+    entry.marked = !entry.marked;
+    const listEl = document.getElementById(`pane-${activeId}-list`);
+    const row = listEl?.children[idx] as HTMLElement | undefined;
+    if (row) {
+      row.classList.toggle('marked', entry.marked);
+      const markSpan = row.firstElementChild as HTMLElement | null;
+      if (markSpan) {
+        markSpan.textContent = entry.marked ? '*' : '';
+      }
+    }
+    updatePaneHeaderMeta(pane);
+  }
+
+  const nextCursor = Math.max(0, Math.min(pane.entries.length - 1, idx + 1));
+  if (nextCursor !== idx) {
+    pane.cursor = nextCursor;
+    const listEl = document.getElementById(`pane-${activeId}-list`);
+    if (listEl) {
+      listEl.children[idx]?.classList.remove('cursor');
+      const nextRow = listEl.children[nextCursor] as HTMLElement | undefined;
+      if (nextRow) {
+        nextRow.classList.add('cursor');
+        nextRow.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }
+  renderStatus();
+  vscode.postMessage({
+    type: 'syncToggleMark',
+    paneId: activeId,
+    index: idx,
+    marked: entry.marked,
+    nextCursor: pane.cursor,
+  });
+}
+
+function handleLocalNavigationAction(action: string): boolean {
+  if (!currentState) {
+    return false;
+  }
+  const activeId = currentState.activePane;
+  const activePane = currentState.panes[activeId];
+  switch (action) {
+    case 'cursorUp':
+      setCursorLocally(activeId, activePane.cursor - 1);
+      return true;
+    case 'cursorDown':
+      setCursorLocally(activeId, activePane.cursor + 1);
+      return true;
+    case 'cursorTop':
+      setCursorLocally(activeId, 0);
+      return true;
+    case 'cursorBottom':
+      setCursorLocally(activeId, Math.max(0, activePane.entries.length - 1));
+      return true;
+    case 'pageUp':
+      setCursorLocally(activeId, activePane.cursor - 10);
+      return true;
+    case 'pageDown':
+      setCursorLocally(activeId, activePane.cursor + 10);
+      return true;
+    case 'paneLeft':
+      setActivePaneLocally(0);
+      return true;
+    case 'paneRight':
+      setActivePaneLocally(1);
+      return true;
+    case 'switchPane':
+      setActivePaneLocally(activeId === 0 ? 1 : 0);
+      return true;
+    case 'toggleMark':
+      toggleMarkAndMoveDownLocally();
+      return true;
+    default:
+      return false;
+  }
+}
+
 function renderState(state: FilerStatePayload): void {
   currentState = state;
-  rebuildKeyLookup(state.keybindings);
+  const kbJson = JSON.stringify(state.keybindings);
+  if (kbJson !== lastKeybindingsJson) {
+    lastKeybindingsJson = kbJson;
+    rebuildKeyLookup(state.keybindings);
+    renderHelp(state.keybindings);
+  }
   renderPane(state.panes[0], state.activePane === 0);
   renderPane(state.panes[1], state.activePane === 1);
   renderLogs(state.logs);
-  renderHelp(state.keybindings);
   renderStatus();
 }
 
@@ -463,7 +707,7 @@ function findNextMatch(query: string, direction: 1 | -1, startOffset: number): v
   for (let i = 0; i < len; i++) {
     const idx = (active.cursor + startOffset + i * direction + len * 2) % len;
     if (active.entries[idx].name.toLowerCase().includes(lower)) {
-      vscode.postMessage({ type: 'action', action: 'jumpToIndex', args: { index: idx } });
+      setCursorLocally(currentState.activePane, idx);
       return;
     }
   }
@@ -587,11 +831,26 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
       if (logList) {
         logList.innerHTML = '';
       }
+      if (currentState) {
+        currentState.logs = [];
+      }
+      lastLogSignature = '0';
       break;
     }
     case 'help':
       toggleHelp(msg.open);
       break;
+    case 'busy': {
+      isBusy = msg.busy;
+      document.querySelector('.root')?.classList.toggle('is-busy', isBusy);
+      const leftStatus = document.getElementById('status-left');
+      if (isBusy && leftStatus) {
+        leftStatus.textContent = msg.message || 'Working...';
+      } else {
+        renderStatus();
+      }
+      break;
+    }
     case 'overwritePrompt':
       showOverwritePrompt(msg.prompt);
       break;
@@ -605,13 +864,40 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
 document.addEventListener('DOMContentLoaded', () => {
   ([0, 1] as PaneId[]).forEach((paneId) => {
     const paneEl = document.getElementById(`pane-${paneId}`);
-    paneEl?.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement | null)?.closest('.entry-row')) {
+    const listEl = document.getElementById(`pane-${paneId}-list`);
+
+    listEl?.addEventListener('click', (e) => {
+      if (isBusy) {
         return;
       }
-      if (currentState?.activePane !== paneId) {
-        vscode.postMessage({ type: 'selectPane', paneId });
+      const row = (e.target as HTMLElement | null)?.closest('.entry-row') as HTMLElement | null;
+      if (!row || row.dataset.index === undefined) {
+        return;
       }
+      selectEntryLocally(paneId, Number(row.dataset.index));
+    });
+
+    listEl?.addEventListener('dblclick', (e) => {
+      if (isBusy) {
+        return;
+      }
+      const row = (e.target as HTMLElement | null)?.closest('.entry-row') as HTMLElement | null;
+      if (!row || row.dataset.index === undefined) {
+        return;
+      }
+      vscode.postMessage({
+        type: 'selectEntry',
+        paneId,
+        index: Number(row.dataset.index),
+        open: true,
+      });
+    });
+
+    paneEl?.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement | null)?.closest('.entry-row') || isBusy) {
+        return;
+      }
+      setActivePaneLocally(paneId);
       (document.querySelector('.root') as HTMLElement | null)?.focus();
     });
   });
@@ -677,6 +963,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      if (isBusy) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
     if (isSearchActive) {
       return;
     }
@@ -704,6 +996,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (action === 'incrementalSearch') {
       openSearch();
+      return;
+    }
+    if (handleLocalNavigationAction(action)) {
       return;
     }
 

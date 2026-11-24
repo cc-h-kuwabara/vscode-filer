@@ -81,6 +81,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'clearLogs' }
   | { type: 'prompt'; promptType: PromptRequest }
   | { type: 'overwritePrompt'; prompt: OverwritePromptPayload }
+  | { type: 'busy'; busy: boolean; message?: string }
   | { type: 'help'; open: boolean }
   | { type: 'focus' };
 
@@ -98,6 +99,8 @@ export type WebviewToExtensionMessage =
   | { type: 'action'; action: string; args?: Record<string, unknown> }
   | { type: 'selectPane'; paneId: PaneId }
   | { type: 'selectEntry'; paneId: PaneId; index: number; open?: boolean }
+  | { type: 'syncCursor'; activePane: PaneId; cursors: [number, number] }
+  | { type: 'syncToggleMark'; paneId: PaneId; index: number; marked: boolean; nextCursor: number }
   | { type: 'promptResult'; id: string; action: string; value: string | null }
   | { type: 'overwriteResult'; id: string; decision: OverwriteDecision };
 

@@ -79,6 +79,9 @@
             "enter": [
               "Enter"
             ],
+            "openInVscode": [
+              "e"
+            ],
             "openExternal": [
               "ctrl+Enter"
             ],

@@ -148,6 +148,19 @@ export function parseTarBuffer(buf: Buffer): ArchiveEntryInfo[] {
   return entries;
 }
 
+const tarEntriesCache = new Map<string, { sig: string; entries: ArchiveEntryInfo[] }>();
+const MAX_TAR_CACHE = 8;
+
+function setTarCache(archivePath: string, sig: string, entries: ArchiveEntryInfo[]): void {
+  if (tarEntriesCache.size >= MAX_TAR_CACHE) {
+    const oldest = tarEntriesCache.keys().next().value;
+    if (oldest) {
+      tarEntriesCache.delete(oldest);
+    }
+  }
+  tarEntriesCache.set(archivePath, { sig, entries });
+}
+
 /**
  * Read TAR headers by seeking past file payloads without reading file contents.
  */
@@ -155,6 +168,11 @@ export async function readTarEntries(archivePath: string): Promise<ArchiveEntryI
   const handle = await fs.open(archivePath, 'r');
   try {
     const stat = await handle.stat();
+    const sig = `${stat.size}:${stat.mtimeMs}`;
+    const cached = tarEntriesCache.get(archivePath);
+    if (cached && cached.sig === sig) {
+      return cached.entries;
+    }
     const headerBuf = Buffer.alloc(512);
     const entries: ArchiveEntryInfo[] = [];
     let offset = 0;
@@ -215,6 +233,7 @@ export async function readTarEntries(archivePath: string): Promise<ArchiveEntryI
       offset = dataStart + paddedDataSize;
     }
 
+    setTarCache(archivePath, sig, entries);
     return entries;
   } finally {
     await handle.close();
@@ -222,9 +241,17 @@ export async function readTarEntries(archivePath: string): Promise<ArchiveEntryI
 }
 
 export async function readTarGzEntries(archivePath: string): Promise<ArchiveEntryInfo[]> {
+  const stat = await fs.stat(archivePath);
+  const sig = `${stat.size}:${stat.mtimeMs}`;
+  const cached = tarEntriesCache.get(archivePath);
+  if (cached && cached.sig === sig) {
+    return cached.entries;
+  }
   const gzBuf = await fs.readFile(archivePath);
   const tarBuf = zlib.gunzipSync(gzBuf);
-  return parseTarBuffer(tarBuf);
+  const entries = parseTarBuffer(tarBuf);
+  setTarCache(archivePath, sig, entries);
+  return entries;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -331,23 +358,33 @@ export async function extractArchiveEntryToTempFile(
     return extractZipEntryToTempFile(archivePath, innerPath);
   }
 
-  let tarBuf: Buffer;
+  let content: Buffer;
   if (kind === 'tar') {
-    tarBuf = await fs.readFile(archivePath);
+    const entries = await readTarEntries(archivePath);
+    const target = entries.find((e) => !e.isDirectory && e.innerPath === innerPath);
+    if (!target || target.dataOffset === undefined) {
+      throw new Error(`Entry not found in archive: ${innerPath}`);
+    }
+    content = Buffer.alloc(target.size);
+    const handle = await fs.open(archivePath, 'r');
+    try {
+      await handle.read(content, 0, target.size, target.dataOffset);
+    } finally {
+      await handle.close();
+    }
   } else if (kind === 'tar.gz') {
     const gzBuf = await fs.readFile(archivePath);
-    tarBuf = zlib.gunzipSync(gzBuf);
+    const tarBuf = zlib.gunzipSync(gzBuf);
+    const entries = parseTarBuffer(tarBuf);
+    const target = entries.find((e) => !e.isDirectory && e.innerPath === innerPath);
+    if (!target || target.dataOffset === undefined) {
+      throw new Error(`Entry not found in archive: ${innerPath}`);
+    }
+    content = tarBuf.subarray(target.dataOffset, target.dataOffset + target.size);
   } else {
     throw new Error(`Unsupported archive format: ${archivePath}`);
   }
 
-  const entries = parseTarBuffer(tarBuf);
-  const target = entries.find((e) => !e.isDirectory && e.innerPath === innerPath);
-  if (!target || target.dataOffset === undefined) {
-    throw new Error(`Entry not found in archive: ${innerPath}`);
-  }
-
-  const content = tarBuf.subarray(target.dataOffset, target.dataOffset + target.size);
   const tempRoot = path.join(os.tmpdir(), 'vscode-filer-archive');
   const safeRel = innerPath.split('/').filter((seg) => seg && seg !== '..').join(path.sep);
   const outPath = path.join(tempRoot, path.basename(archivePath), safeRel);

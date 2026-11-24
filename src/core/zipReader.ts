@@ -18,6 +18,12 @@ const EOCD_SIGNATURE = 0x06054b50;
 const CD_SIGNATURE = 0x02014b50;
 const LOCAL_FILE_SIGNATURE = 0x04034b50;
 
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const EXACT_COLLATOR = new Intl.Collator(undefined);
+
+const zipEntriesCache = new Map<string, { sig: string; entries: ZipEntryInfo[] }>();
+const MAX_ARCHIVE_CACHE = 8;
+
 function dosDateTimeToMs(dosDate: number, dosTime: number): number {
   const year = ((dosDate >> 9) & 0x7f) + 1980;
   const month = ((dosDate >> 5) & 0x0f) - 1;
@@ -117,6 +123,12 @@ export async function readZipEntries(archivePath: string): Promise<ZipEntryInfo[
   const handle = await fs.open(archivePath, 'r');
   try {
     const stat = await handle.stat();
+    const sig = `${stat.size}:${stat.mtimeMs}`;
+    const cached = zipEntriesCache.get(archivePath);
+    if (cached && cached.sig === sig) {
+      return cached.entries;
+    }
+
     const tailSize = Math.min(stat.size, 65557);
     const tailOffset = stat.size - tailSize;
     const tailBuf = Buffer.alloc(tailSize);
@@ -126,7 +138,15 @@ export async function readZipEntries(archivePath: string): Promise<ZipEntryInfo[
     const cdBuf = Buffer.alloc(eocd.cdSize);
     await handle.read(cdBuf, 0, eocd.cdSize, eocd.cdOffset);
 
-    return parseCentralDirectoryBuffer(cdBuf, eocd.totalEntries);
+    const entries = parseCentralDirectoryBuffer(cdBuf, eocd.totalEntries);
+    if (zipEntriesCache.size >= MAX_ARCHIVE_CACHE) {
+      const oldestKey = zipEntriesCache.keys().next().value;
+      if (oldestKey) {
+        zipEntriesCache.delete(oldestKey);
+      }
+    }
+    zipEntriesCache.set(archivePath, { sig, entries });
+    return entries;
   } finally {
     await handle.close();
   }
@@ -156,14 +176,39 @@ export async function extractZipEntryToTempFile(
   archivePath: string,
   innerPath: string
 ): Promise<string> {
-  const buf = await fs.readFile(archivePath);
-  const entries = parseZipBuffer(buf);
+  const entries = await readZipEntries(archivePath);
   const target = entries.find((e) => !e.isDirectory && e.innerPath === innerPath);
   if (!target) {
     throw new Error(`Entry not found in ZIP: ${innerPath}`);
   }
 
-  const content = extractZipEntryFromBuffer(buf, target);
+  let content: Buffer;
+  const handle = await fs.open(archivePath, 'r');
+  try {
+    const headerBuf = Buffer.alloc(30);
+    await handle.read(headerBuf, 0, 30, target.localHeaderOffset);
+    if (headerBuf.readUInt32LE(0) !== LOCAL_FILE_SIGNATURE) {
+      throw new Error(`Invalid local file header for: ${target.innerPath}`);
+    }
+    const fileNameLen = headerBuf.readUInt16LE(26);
+    const extraLen = headerBuf.readUInt16LE(28);
+    const dataStart = target.localHeaderOffset + 30 + fileNameLen + extraLen;
+    const compressedData = Buffer.alloc(target.compressedSize);
+    await handle.read(compressedData, 0, target.compressedSize, dataStart);
+
+    if (target.compressionMethod === 0) {
+      content = compressedData;
+    } else if (target.compressionMethod === 8) {
+      content = zlib.inflateRawSync(compressedData);
+    } else {
+      throw new Error(
+        `Unsupported ZIP compression method (${target.compressionMethod}) for: ${target.innerPath}`
+      );
+    }
+  } finally {
+    await handle.close();
+  }
+
   const tempRoot = path.join(os.tmpdir(), 'vscode-filer-zip');
   const safeRel = innerPath.split('/').filter((seg) => seg && seg !== '..').join(path.sep);
   const outPath = path.join(tempRoot, path.basename(archivePath), safeRel);
@@ -181,7 +226,18 @@ function globToRegExp(pattern: string): RegExp {
 }
 
 export function sortFileEntries(entries: FileEntry[], field: SortField, order: SortOrder): void {
+  if (entries.length <= 1) {
+    return;
+  }
   const dirFactor = order === 'asc' ? 1 : -1;
+  let extCache: Map<FileEntry, string> | null = null;
+  if (field === 'ext') {
+    extCache = new Map();
+    for (const entry of entries) {
+      extCache.set(entry, path.extname(entry.name).toLowerCase());
+    }
+  }
+
   entries.sort((a, b) => {
     if (a.isDirectory !== b.isDirectory) {
       return a.isDirectory ? -1 : 1;
@@ -195,18 +251,18 @@ export function sortFileEntries(entries: FileEntry[], field: SortField, order: S
         cmp = a.mtimeMs - b.mtimeMs;
         break;
       case 'ext': {
-        const extA = path.extname(a.name).toLowerCase();
-        const extB = path.extname(b.name).toLowerCase();
-        cmp = extA.localeCompare(extB);
+        const extA = extCache!.get(a) ?? '';
+        const extB = extCache!.get(b) ?? '';
+        cmp = NAME_COLLATOR.compare(extA, extB);
         break;
       }
       case 'name':
       default:
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        cmp = NAME_COLLATOR.compare(a.name, b.name);
         break;
     }
     if (cmp === 0) {
-      cmp = a.name.localeCompare(b.name);
+      cmp = EXACT_COLLATOR.compare(a.name, b.name);
     }
     return cmp * dirFactor;
   });

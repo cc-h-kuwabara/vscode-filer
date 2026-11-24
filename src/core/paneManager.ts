@@ -152,75 +152,93 @@ export class PaneManager {
 
     const maskRegex = pane.mask.trim() ? globToRegExp(pane.mask.trim()) : null;
 
-    const items = await Promise.all(
-      dirents.map(async (dirent): Promise<FileEntry | null> => {
-        const name = dirent.name;
-        if (!pane.showDotFiles && name.startsWith('.')) {
-          return null;
-        }
+    const filteredDirents = dirents.filter((dirent) => {
+      const name = dirent.name;
+      if (!pane.showDotFiles && name.startsWith('.')) {
+        return false;
+      }
+      if (maskRegex && !dirent.isDirectory() && !dirent.isSymbolicLink() && !maskRegex.test(name)) {
+        return false;
+      }
+      return true;
+    });
 
-        const fullPath = path.join(pane.cwd, name);
-        let isDirectory = dirent.isDirectory();
-        const isSymlink = dirent.isSymbolicLink();
-        let isBrokenSymlink = false;
-        let statOk = false;
-        let linkTarget: string | undefined;
-        let size = 0;
-        let mtimeMs = 0;
-        let mode = 0;
+    const validItems: FileEntry[] = [];
+    const STAT_BATCH_SIZE = 128;
 
-        try {
-          const lstat = await fs.lstat(fullPath);
-          statOk = true;
-          size = lstat.size;
-          mtimeMs = lstat.mtimeMs;
-          mode = lstat.mode;
+    for (let i = 0; i < filteredDirents.length; i += STAT_BATCH_SIZE) {
+      const batch = filteredDirents.slice(i, i + STAT_BATCH_SIZE);
+      const batchItems = await Promise.all(
+        batch.map(async (dirent): Promise<FileEntry | null> => {
+          const name = dirent.name;
+          const fullPath = path.join(pane.cwd, name);
+          let isDirectory = dirent.isDirectory();
+          const isSymlink = dirent.isSymbolicLink();
+          let isBrokenSymlink = false;
+          let statOk = false;
+          let linkTarget: string | undefined;
+          let size = 0;
+          let mtimeMs = 0;
+          let mode = 0;
 
-          if (isSymlink) {
-            try {
-              linkTarget = await fs.readlink(fullPath);
-              const stat = await fs.stat(fullPath);
-              isDirectory = stat.isDirectory();
-              size = stat.size;
-              mtimeMs = stat.mtimeMs;
-              mode = stat.mode;
-            } catch {
-              // Broken symlink
-              isDirectory = false;
-              isBrokenSymlink = true;
+          try {
+            const lstat = await fs.lstat(fullPath);
+            statOk = true;
+            size = lstat.size;
+            mtimeMs = lstat.mtimeMs;
+            mode = lstat.mode;
+
+            if (isSymlink) {
+              try {
+                linkTarget = await fs.readlink(fullPath);
+                const stat = await fs.stat(fullPath);
+                isDirectory = stat.isDirectory();
+                size = stat.size;
+                mtimeMs = stat.mtimeMs;
+                mode = stat.mode;
+              } catch {
+                // Broken symlink
+                isDirectory = false;
+                isBrokenSymlink = true;
+              }
             }
+          } catch {
+            // Permission or transient error
           }
-        } catch {
-          // Permission or transient error
+
+          if (maskRegex && !isDirectory && !maskRegex.test(name)) {
+            return null;
+          }
+
+          const isHidden = name.startsWith('.') && name !== '..';
+          const isReadOnly = !isBrokenSymlink && isReadOnlyMode(mode, statOk);
+          const isExecutable = !isBrokenSymlink && isExecutableFile(name, isDirectory, mode);
+
+          return {
+            name,
+            path: fullPath,
+            isDirectory,
+            isSymlink,
+            isBrokenSymlink,
+            isReadOnly,
+            isHidden,
+            isExecutable,
+            linkTarget,
+            size,
+            mtimeMs,
+            mode,
+            marked: false,
+          };
+        })
+      );
+
+      for (const item of batchItems) {
+        if (item !== null) {
+          validItems.push(item);
         }
+      }
+    }
 
-        if (maskRegex && !isDirectory && !maskRegex.test(name)) {
-          return null;
-        }
-
-        const isHidden = name.startsWith('.') && name !== '..';
-        const isReadOnly = !isBrokenSymlink && isReadOnlyMode(mode, statOk);
-        const isExecutable = !isBrokenSymlink && isExecutableFile(name, isDirectory, mode);
-
-        return {
-          name,
-          path: fullPath,
-          isDirectory,
-          isSymlink,
-          isBrokenSymlink,
-          isReadOnly,
-          isHidden,
-          isExecutable,
-          linkTarget,
-          size,
-          mtimeMs,
-          mode,
-          marked: false,
-        };
-      })
-    );
-
-    const validItems = items.filter((item): item is FileEntry => item !== null);
     sortFileEntries(validItems, pane.sortField, pane.sortOrder);
 
     pane.entries = [...entries, ...validItems];
